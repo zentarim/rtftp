@@ -1,1 +1,4 @@
 /target
+/Cargo.lock
+/.idea/
+/tests/test_disk.qcow2
