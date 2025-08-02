@@ -1,0 +1,21 @@
+name: Makefile CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+    branches: [ "**" ]
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # GutHub environment claims it's user is root. Doesn't look so.
+      # Use of 'sudo' and some tweaks are necessary.
+      - name: Prepare environment
+        run: sudo ./prepare_debian_environment.sh && sudo chmod o+r "$(readlink -f /boot/vmlinuz)" && sudo chmod 0666 /dev/kvm
+
+      - name: Run tests
+        run: make test
