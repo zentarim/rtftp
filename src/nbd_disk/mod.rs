@@ -178,7 +178,7 @@ impl NBDFileReader {
 
 impl Display for NBDFileReader {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write! {f, "<{}>", self.display}
+        write! {f, "{}", self.display}
     }
 }
 
