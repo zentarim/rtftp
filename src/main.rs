@@ -28,10 +28,20 @@ struct Args {
     #[arg(short = 'p', long, default_value_t = 69, help = "Listen port")]
     listen_port: u16,
 
-    #[arg(short = 'r', long, help = "TFTP root directory", long_help = "A directory to serve files from")]
+    #[arg(
+        short = 'r',
+        long,
+        help = "TFTP root directory",
+        long_help = "A directory to serve files from"
+    )]
     root_dir: PathBuf,
 
-    #[arg(short = 't', long, help = "Peer handler inactivity timeout", long_help = "After reaching this timeout of inactivity, a connected remote disk is closed.")]
+    #[arg(
+        short = 't',
+        long,
+        help = "Peer handler inactivity timeout",
+        long_help = "After reaching this timeout of inactivity, a connected remote disk is closed."
+    )]
     idle_timeout: u64,
 }
 
