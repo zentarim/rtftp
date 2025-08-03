@@ -18,6 +18,10 @@ const EOPT: isize = -1;
 // See: include/guest_fs.h
 const GUEST_FS_EVENT_APPLIANCE: u64 = 0x0010;
 
+// According to https://libguestfs.org/guestfs.3.html#guestfs_pread
+// there is a limit of data returned from guestfs_pread() which is somewhere between 2 and 4 mb.
+const CHUNK_SIZE: i32 = 3 * 1024 * 1024;
+
 type GuestFSEventCallback = Option<
     unsafe extern "C" fn(
         g: *const guestfs_h,
@@ -311,19 +315,14 @@ impl GuestFS {
         }
     }
 
-    pub(super) fn read_to(
-        &self,
-        path: &str,
-        buffer: &mut [u8],
-        offset: usize,
-    ) -> Result<usize, GuestFSError> {
+    pub(super) fn read_chunk(&self, path: &str, offset: usize) -> Result<Vec<u8>, GuestFSError> {
         let c_str_path = CString::new(path).expect("CString::new failed");
         unsafe {
             let mut size_r: libc::size_t = 0;
             let read_buffer = guestfs_pread(
                 self.handle,
                 c_str_path.as_ptr(),
-                buffer.len() as libc::c_int,
+                CHUNK_SIZE,
                 offset as i64,
                 &mut size_r,
             );
@@ -332,13 +331,7 @@ impl GuestFS {
                 eprintln!("Can't read from {c_str_path:?}: {last_error}");
                 Err(last_error)
             } else {
-                ptr::copy_nonoverlapping(
-                    read_buffer as *const u8,
-                    buffer.as_mut_ptr(),
-                    size_r as usize,
-                );
-                libc::free(read_buffer as *mut libc::c_void);
-                Ok(size_r as usize)
+                Ok(Vec::from_raw_parts(read_buffer as *mut u8, size_r, size_r))
             }
         }
     }

@@ -85,24 +85,28 @@ impl ConnectedDisk for NBDDisk {
     }
 
     fn open(&self, absolute_path: &str) -> Result<NBDFileReader, FileError> {
-        match self.handle.get_size(absolute_path) {
-            Ok(file_size) => Ok(NBDFileReader {
-                handle: self.handle.clone(),
-                path: absolute_path.to_string(),
-                file_size,
-                current_offset: 0,
-                repr: format!("<{absolute_path} on {self}>"),
-            }),
+        let file_size = match self.handle.get_size(absolute_path) {
+            Ok(file_size) => file_size,
             Err(guestfs_error) => {
-                if guestfs_error
+                return if guestfs_error
                     .to_string()
                     .contains("No such file or directory")
                 {
                     Err(FileError::FileNotFound)
                 } else {
                     Err(FileError::UnknownError(guestfs_error.to_string()))
-                }
+                };
             }
+        };
+        let repr = format!("<{absolute_path} on {self}>");
+        match NBDFileReader::open(
+            self.handle.clone(),
+            absolute_path.to_string(),
+            file_size,
+            repr,
+        ) {
+            Ok(file_reader) => Ok(file_reader),
+            Err(guestfs_error) => Err(FileError::UnknownError(guestfs_error.to_string())),
         }
     }
 }
@@ -137,7 +141,39 @@ pub(super) struct NBDFileReader {
     path: String,
     file_size: usize,
     current_offset: usize,
+    chunk: FileChunk,
     repr: String,
+}
+
+impl NBDFileReader {
+    fn open(
+        handle: Rc<GuestFS>,
+        path: String,
+        file_size: usize,
+        repr: String,
+    ) -> Result<Self, GuestFSError> {
+        let first_chunk = handle.read_chunk(&path, 0)?;
+        Ok(Self {
+            handle,
+            path,
+            file_size,
+            current_offset: 0,
+            chunk: FileChunk::new(first_chunk),
+            repr,
+        })
+    }
+
+    fn buffer_new_chunk(&mut self) -> Result<bool, GuestFSError> {
+        let next_chunk = self
+            .handle
+            .read_chunk(self.path.as_str(), self.current_offset)?;
+        if next_chunk.is_empty() {
+            Ok(false)
+        } else {
+            self.chunk = FileChunk::new(next_chunk);
+            Ok(true)
+        }
+    }
 }
 
 impl Display for NBDFileReader {
@@ -148,22 +184,65 @@ impl Display for NBDFileReader {
 
 impl OpenedFile for NBDFileReader {
     fn read_to(&mut self, buffer: &mut [u8]) -> Result<usize, FileError> {
-        // It is extremely inefficient to request every chunk by a specific command but
-        // of guestfs_download() is not really convenient to use due it's locking nature.
-        match self
-            .handle
-            .read_to(self.path.as_str(), buffer, self.current_offset)
-        {
-            Ok(read_bytes) => {
-                self.current_offset += read_bytes;
-                Ok(read_bytes)
-            }
-            Err(guestfs_error) => Err(FileError::UnknownError(guestfs_error.to_string())),
+        let mut read: usize = 0;
+        while self.current_offset < self.file_size && read < buffer.len() {
+            let copied = self.chunk.fill(&mut buffer[read..]);
+            if copied == 0 {
+                let chunk_has_data = match self.buffer_new_chunk() {
+                    Ok(result) => result,
+                    Err(guestfs_error) => {
+                        return Err(FileError::UnknownError(guestfs_error.to_string()));
+                    }
+                };
+                if !chunk_has_data {
+                    break;
+                }
+            };
+            read += copied;
+            self.current_offset += copied;
         }
+        Ok(read)
     }
 
     fn get_size(&mut self) -> Result<usize, FileError> {
         Ok(self.file_size)
+    }
+}
+
+struct FileChunk {
+    buffer: Vec<u8>,
+    offset: usize,
+}
+
+impl Debug for FileChunk {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "<FileChunk {}, offset {}>",
+            self.buffer.len(),
+            self.offset
+        )
+    }
+}
+
+impl FileChunk {
+    fn new(buffer: Vec<u8>) -> Self {
+        Self { buffer, offset: 0 }
+    }
+    fn fill(&mut self, buffer: &mut [u8]) -> usize {
+        let available_bytes = &self.buffer[self.offset..];
+        if available_bytes.is_empty() {
+            return 0;
+        }
+        if available_bytes.len() <= buffer.len() {
+            buffer[..available_bytes.len()].copy_from_slice(available_bytes);
+            self.offset += available_bytes.len();
+            available_bytes.len()
+        } else {
+            buffer.copy_from_slice(&available_bytes[..buffer.len()]);
+            self.offset += buffer.len();
+            buffer.len()
+        }
     }
 }
 

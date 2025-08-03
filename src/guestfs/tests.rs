@@ -60,11 +60,10 @@ fn _read_file(guestfs: &GuestFS, path: &str) -> Vec<u8> {
     let mut result = vec![];
     let mut offset = 0;
     loop {
-        let mut buffer = vec![0u8; 512];
-        let chunk_size = guestfs.read_to(path, &mut buffer, offset).unwrap();
-        if chunk_size > 0 {
-            result.extend_from_slice(&buffer[..chunk_size]);
-            offset += chunk_size;
+        let chunk = guestfs.read_chunk(path, offset).unwrap();
+        if !chunk.is_empty() {
+            result.extend_from_slice(&chunk);
+            offset += chunk.len();
         } else {
             break;
         }
