@@ -7,7 +7,7 @@ use std::path::PathBuf;
 
 pub(super) struct LocalOpenedFile {
     rd: File,
-    repr: String,
+    display: String,
 }
 
 impl Debug for LocalOpenedFile {
@@ -18,7 +18,7 @@ impl Debug for LocalOpenedFile {
 
 impl Display for LocalOpenedFile {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write! {f, "<OpenedFile {}>", self.repr}
+        write! {f, "<OpenedFile {}>", self.display}
     }
 }
 
@@ -70,7 +70,7 @@ impl Root for LocalRoot {
             .map_err(local_error_map)?;
         Ok(Box::new(LocalOpenedFile {
             rd: result,
-            repr: printable_path,
+            display: printable_path,
         }))
     }
 }

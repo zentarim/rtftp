@@ -151,13 +151,13 @@ impl OptionsAcknowledge {
 
 impl Display for OptionsAcknowledge {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let repr = self
+        let display = self
             .options
             .iter()
             .map(|(name, value)| format!("{name}={value}"))
             .collect::<Vec<_>>()
             .join(",");
-        write!(f, "OACK: [{repr}]")
+        write!(f, "OACK: [{display}]")
     }
 }
 
