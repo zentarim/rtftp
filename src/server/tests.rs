@@ -1118,7 +1118,7 @@ fn test_download_nbd_file_aligned() {
     let client = server.open_paired_client(source_ip);
     let existing_file = "aligned.file";
     let read_data = _download(client, existing_file).unwrap();
-    let data = _make_payload(51200);
+    let data = _make_payload(4194304);
     assert_eq!(read_data, data);
 }
 
@@ -1147,7 +1147,7 @@ fn test_download_nbd_file_nonaligned() {
     let client = server.open_paired_client(source_ip);
     let existing_file = "nonaligned.file";
     let read_data = _download(client, existing_file).unwrap();
-    let data = _make_payload(51205);
+    let data = _make_payload(4194319);
     assert_eq!(read_data, data);
 }
 
@@ -1175,7 +1175,7 @@ fn request_file_size_remote() {
     let server = _ThreadedTFTPServer::new(server_dir, "127.0.0.10", 30);
     let client = server.open_paired_client(source_ip);
     let existing_file_name = "nonaligned.file";
-    let existing_file_size: usize = 51205;
+    let existing_file_size: usize = 4194319;
     let send_options = HashMap::from([("tsize".to_string(), "0".to_string())]);
     let sent_request = client
         .send_optioned_read_request(existing_file_name, &send_options)
@@ -1248,7 +1248,7 @@ fn test_local_file_takes_precedence() {
     });
     let nbd_share_config_file = server_dir.join(format!("{}.nbd", source_ip));
     _write_file(&nbd_share_config_file, config.to_string().as_bytes());
-    let size = 51200;
+    let size = 4194304;
     let local_payload = b"local pattern"
         .iter()
         .copied()
