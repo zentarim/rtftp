@@ -8,6 +8,11 @@ use std::{io, time};
 
 const _DATA_PATTERN: &str = "ARBITRARY DATA";
 
+fn _make_payload(size: usize) -> Vec<u8> {
+    let pattern = _DATA_PATTERN.as_bytes();
+    pattern.iter().copied().cycle().take(size).collect()
+}
+
 fn _get_test_data_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests")
 }
@@ -49,6 +54,22 @@ fn _open_dir_ro(path: &str) -> io::Result<RawFd> {
     } else {
         Err(io::Error::last_os_error())
     }
+}
+
+fn _read_file(guestfs: &GuestFS, path: &str) -> Vec<u8> {
+    let mut result = vec![];
+    let mut offset = 0;
+    loop {
+        let mut buffer = vec![0u8; 512];
+        let chunk_size = guestfs.read_to(path, &mut buffer, offset).unwrap();
+        if chunk_size > 0 {
+            result.extend_from_slice(&buffer[..chunk_size]);
+            offset += chunk_size;
+        } else {
+            break;
+        }
+    }
+    result
 }
 
 #[test]
@@ -96,5 +117,47 @@ fn test_open_existing_disk() {
     eprintln!(
         "Spent: {:.3} s",
         end_time.duration_since(start_time).as_secs_f64()
+    );
+}
+
+#[test]
+fn test_read_aligned_file() {
+    _ensure_prerequisite_disk();
+    let guestfs = GuestFS::new();
+    guestfs
+        .add_disk(_get_test_qcow().to_str().unwrap(), true)
+        .unwrap();
+    guestfs.launch().unwrap();
+    guestfs.mount_ro("/dev/sda2", "/").unwrap();
+    guestfs.mount_ro("/dev/sda1", "/boot").unwrap();
+    let expected_data = _make_payload(51200);
+    let actual_data = _read_file(&guestfs, "/boot/aligned.file");
+    assert_eq!(
+        actual_data,
+        expected_data,
+        "Recv: {}, Expected: {}",
+        actual_data.len(),
+        expected_data.len()
+    );
+}
+
+#[test]
+fn test_read_nonaligned_file() {
+    _ensure_prerequisite_disk();
+    let guestfs = GuestFS::new();
+    guestfs
+        .add_disk(_get_test_qcow().to_str().unwrap(), true)
+        .unwrap();
+    guestfs.launch().unwrap();
+    guestfs.mount_ro("/dev/sda2", "/").unwrap();
+    guestfs.mount_ro("/dev/sda1", "/boot").unwrap();
+    let expected_data = _make_payload(51205);
+    let actual_data = _read_file(&guestfs, "/boot/nonaligned.file");
+    assert_eq!(
+        actual_data,
+        expected_data,
+        "Recv: {}, Expected: {}",
+        actual_data.len(),
+        expected_data.len()
     );
 }
