@@ -130,7 +130,7 @@ fn test_read_aligned_file() {
     guestfs.launch().unwrap();
     guestfs.mount_ro("/dev/sda2", "/").unwrap();
     guestfs.mount_ro("/dev/sda1", "/boot").unwrap();
-    let expected_data = _make_payload(51200);
+    let expected_data = _make_payload(4194304);
     let actual_data = _read_file(&guestfs, "/boot/aligned.file");
     assert_eq!(
         actual_data,
@@ -151,7 +151,7 @@ fn test_read_nonaligned_file() {
     guestfs.launch().unwrap();
     guestfs.mount_ro("/dev/sda2", "/").unwrap();
     guestfs.mount_ro("/dev/sda1", "/boot").unwrap();
-    let expected_data = _make_payload(51205);
+    let expected_data = _make_payload(4194319);
     let actual_data = _read_file(&guestfs, "/boot/nonaligned.file");
     assert_eq!(
         actual_data,

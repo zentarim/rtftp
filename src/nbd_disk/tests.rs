@@ -265,7 +265,7 @@ fn open_existing_file() {
     let file = "/boot/aligned.file";
     let opened = disk.open(file);
     assert!(opened.is_ok());
-    assert_eq!(opened.unwrap().get_size(), Ok(51200));
+    assert_eq!(opened.unwrap().get_size(), Ok(4194304));
 }
 
 #[test]
