@@ -121,7 +121,7 @@ unsafe extern "C" {
         count: libc::c_int,
         offset: i64,
         size_r: *mut libc::size_t,
-    ) -> *const libc::c_char;
+    ) -> *mut libc::c_char;
 
     fn guestfs_set_event_callback(
         handle: *const guestfs_h,
