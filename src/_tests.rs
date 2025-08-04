@@ -1,11 +1,12 @@
 use libc;
+use std::any::type_name;
 use std::ffi::CString;
-use std::fs::File;
+use std::fs::{File, create_dir};
 use std::io::BufRead;
 use std::os::fd::{FromRawFd, RawFd};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
-use std::{fs, io, thread, time};
+use std::{env, fs, io, thread, time};
 
 const _DATA_PATTERN: &str = "ARBITRARY DATA";
 
@@ -219,4 +220,16 @@ fn _get_fd_symlink_names(pid: u32) -> io::Result<Vec<String>> {
         }
     }
     Ok(result)
+}
+
+fn get_fn_name<T>(_: T) -> &'static str {
+    type_name::<T>()
+}
+
+pub(super) fn mk_tmp<T>(test_func: T) -> PathBuf {
+    let test_dir_name = get_fn_name(test_func).replace("::", "_");
+    let pid = std::process::id();
+    let test_tmp_dir = env::temp_dir().join(format!("rtftp_{pid}_{test_dir_name}"));
+    create_dir(&test_tmp_dir).unwrap();
+    test_tmp_dir
 }
