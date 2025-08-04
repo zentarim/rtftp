@@ -90,6 +90,9 @@ impl Display for LocalRoot {
 #[cfg(test)]
 mod test {
     use super::*;
+    use crate::_tests::mk_tmp;
+    use std::fs::{Permissions, set_permissions};
+    use std::os::unix::fs::PermissionsExt;
     use std::path::PathBuf;
 
     #[test]
@@ -103,12 +106,10 @@ mod test {
 
     #[test]
     fn open_access_denied() {
-        if unsafe { libc::geteuid() } == 0 {
-            eprintln!("The tes is not intended to be run under root privileges");
-            return;
-        };
+        let unreadable_directory = mk_tmp(open_access_denied);
+        set_permissions(&unreadable_directory, Permissions::from_mode(0o055)).unwrap();
         let local_root = LocalRoot {
-            path: PathBuf::from("/root"),
+            path: unreadable_directory,
         };
         let result = local_root.open("nonexistent");
         assert_eq!(result.err().unwrap(), FileError::AccessViolation);

@@ -1,17 +1,16 @@
 use super::*;
-use crate::_tests::{make_payload, run_nbd_server};
+use crate::_tests::{make_payload, mk_tmp, run_nbd_server};
 use crate::cursor::{ReadCursor, WriteCursor};
 use serde_json::json;
-use std::any::type_name;
 use std::ffi::CStr;
-use std::fs::{File, Permissions, create_dir, set_permissions};
+use std::fs::{File, Permissions, set_permissions};
 use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::thread::JoinHandle;
-use std::{env, fmt, fs, io, thread, time};
+use std::{fmt, fs, io, thread, time};
 
 const _DATA_PATTERN: &str = "ARBITRARY DATA";
 const _BUFFER_SIZE: usize = 1536;
@@ -21,18 +20,6 @@ const _DATA: u16 = 0x03;
 const _ACK: u16 = 0x04;
 const _ERR: u16 = 0x05;
 const _OACK: u16 = 0x06;
-
-fn get_fn_name<T>(_: T) -> &'static str {
-    type_name::<T>()
-}
-
-fn mk_tmp<T>(test_func: T) -> PathBuf {
-    let test_dir_name = get_fn_name(test_func).replace("::", "_");
-    let pid = std::process::id();
-    let test_tmp_dir = env::temp_dir().join(format!("rtftp_{pid}_{test_dir_name}"));
-    create_dir(&test_tmp_dir).unwrap();
-    test_tmp_dir
-}
 
 #[derive(Debug)]
 struct _ThreadedTFTPServer {
