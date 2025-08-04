@@ -612,7 +612,7 @@ impl _OACK {
             datagram_stream: self.datagram_stream,
             read_buffer: self.read_buffer,
             write_buffer: self.write_buffer,
-            buffer_size: buffer_size,
+            buffer_size,
         })
     }
 }
