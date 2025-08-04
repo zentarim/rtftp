@@ -1,15 +1,13 @@
 use super::*;
+use crate::_tests::{make_payload, run_nbd_server};
 use crate::cursor::{ReadCursor, WriteCursor};
-use libc::{LOCK_EX, O_DIRECTORY, O_RDONLY, flock, open};
 use serde_json::json;
 use std::any::type_name;
-use std::ffi::{CStr, CString};
+use std::ffi::CStr;
 use std::fs::{File, Permissions, create_dir, set_permissions};
-use std::io::{BufRead, Write};
-use std::os::fd::{FromRawFd, RawFd};
+use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
-use std::path::{Path, PathBuf};
-use std::process::{Child, Command};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::thread::JoinHandle;
@@ -23,191 +21,6 @@ const _DATA: u16 = 0x03;
 const _ACK: u16 = 0x04;
 const _ERR: u16 = 0x05;
 const _OACK: u16 = 0x06;
-
-fn _make_payload(size: usize) -> Vec<u8> {
-    let pattern = _DATA_PATTERN.as_bytes();
-    pattern.iter().copied().cycle().take(size).collect()
-}
-fn _get_test_data_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests")
-}
-
-fn _get_test_qcow() -> PathBuf {
-    _get_test_data_dir().join("test_disk.qcow2")
-}
-
-fn _ensure_prerequisite_disk() {
-    if !_get_test_qcow().exists() {
-        let script = _get_test_data_dir().join("build_test_disk.sh");
-        let status = Command::new(&script)
-            .arg(_get_test_qcow().as_path())
-            .arg(_DATA_PATTERN)
-            .status()
-            .expect(format!("{:?} failed", script).as_str());
-        if !status.success() {
-            panic!("{script:?} failed");
-        }
-    }
-}
-
-fn _explicit_lock() -> io::Result<File> {
-    let cwd_fd = open_dir_ro(_get_test_data_dir().to_str().unwrap())?;
-    if unsafe { flock(cwd_fd, LOCK_EX) } != 0 {
-        Err(io::Error::last_os_error())
-    } else {
-        Ok(unsafe { File::from_raw_fd(cwd_fd) })
-    }
-}
-
-fn open_dir_ro(path: &str) -> io::Result<RawFd> {
-    let c_path = CString::new(path)?;
-    let fd = unsafe { open(c_path.as_ptr(), O_RDONLY | O_DIRECTORY) as RawFd };
-    if fd != 0 {
-        Ok(fd)
-    } else {
-        Err(io::Error::last_os_error())
-    }
-}
-
-struct _NBDServerProcess {
-    process: Child,
-    url: String,
-}
-
-impl Drop for _NBDServerProcess {
-    fn drop(&mut self) {
-        self.process.kill().unwrap();
-        self.process.wait().unwrap();
-    }
-}
-
-fn _run_nbd_server(listen_ip: &str) -> _NBDServerProcess {
-    let lock_file = _explicit_lock().unwrap();
-    _ensure_prerequisite_disk();
-    let export_name = "disk";
-    let test_disk = _get_test_qcow().to_string_lossy().to_string();
-    let nbd_process = Command::new("qemu-nbd")
-        .arg(format!("--bind={listen_ip}"))
-        .arg("--port=0")
-        .arg(format!("--export-name={export_name}"))
-        .arg("--read-only")
-        .arg(test_disk)
-        .spawn()
-        .unwrap();
-    let listen_port = _get_listen_tcp_port(nbd_process.id())
-        .expect(format!("Could not get listener port for {nbd_process:?}").as_str());
-    drop(lock_file);
-    let nbd_url = String::from(format!("nbd://{listen_ip}:{listen_port}/{export_name}"));
-    eprintln!("Started NBD server on {nbd_url}");
-    _NBDServerProcess {
-        process: nbd_process,
-        url: nbd_url,
-    }
-}
-
-fn _get_listen_tcp_port(pid: u32) -> io::Result<u16> {
-    let inode = get_single_socket_inode(pid, time::Duration::new(5, 0))
-        .expect(format!("Can't find an inode for PID {pid}").as_str());
-    _get_tcp_port(inode)
-}
-
-fn _get_tcp_port(socket_inode: u64) -> io::Result<u16> {
-    let path = Path::new("/proc/net/tcp");
-    let file = fs::File::open(path)?;
-    let reader = io::BufReader::new(file);
-    for (index, line_res) in reader.lines().enumerate() {
-        let line = line_res?;
-        if index == 0 {
-            continue;
-        }
-        let fields: Vec<&str> = line.split_whitespace().collect();
-        if fields.len() < 10 {
-            continue;
-        }
-        let inode_field = fields[9];
-        if inode_field.parse::<u64>().ok() != Some(socket_inode) {
-            continue;
-        }
-        let port = match fields[1].split_once(':') {
-            Some((_hex_ip, hex_port)) => u16::from_str_radix(hex_port, 16).unwrap(),
-            None => continue,
-        };
-        return Ok(port);
-    }
-    Err(io::Error::new(
-        io::ErrorKind::NotFound,
-        format!("Can't find TCP socket for inode {socket_inode}"),
-    ))
-}
-
-fn get_single_socket_inode(pid: u32, timeout: time::Duration) -> io::Result<u64> {
-    let deadline = time::Instant::now() + timeout;
-    loop {
-        let inodes = get_socket_inodes(pid)?;
-        match inodes.len() {
-            0 => {
-                if time::Instant::now() > deadline {
-                    return Err(io::Error::new(
-                        io::ErrorKind::TimedOut,
-                        format!("Can't find a socket inode for pid {pid}"),
-                    ));
-                }
-                thread::sleep(time::Duration::from_millis(100));
-            }
-            1 => return Ok(inodes[0]),
-            _ => {
-                return Err(io::Error::new(
-                    io::ErrorKind::Other,
-                    format!("Found unexpected multiple socket inodes: {:?}", inodes),
-                ));
-            }
-        }
-    }
-}
-
-fn get_socket_inodes(pid: u32) -> io::Result<Vec<u64>> {
-    let mut result = Vec::new();
-    for fd_name in get_fd_symlink_names(pid)? {
-        if let Some(inode_str) = fd_name.strip_prefix("socket:[") {
-            if let Some(inode_str) = inode_str.strip_suffix(']') {
-                if let Ok(inode) = inode_str.parse::<u64>() {
-                    result.push(inode);
-                }
-            }
-        }
-    }
-    Ok(result)
-}
-
-fn get_fd_symlink_names(pid: u32) -> io::Result<Vec<String>> {
-    let fd_dir = PathBuf::from(format!("/proc/{pid}/fd"));
-    let entries = match fs::read_dir(&fd_dir) {
-        Ok(entries) => entries,
-        Err(err) if err.kind() == io::ErrorKind::PermissionDenied => {
-            return Err(io::Error::new(
-                io::ErrorKind::NotFound,
-                format!("PID {pid} does not exist or is not accessible"),
-            ));
-        }
-        Err(err) => return Err(err),
-    };
-
-    let mut result = Vec::new();
-    for entry in entries {
-        let entry = entry?;
-        match fs::read_link(entry.path()) {
-            Ok(target) => {
-                if let Some(name) = target.to_str() {
-                    result.push(name.to_string());
-                }
-            }
-            Err(err) if err.kind() == io::ErrorKind::NotFound => continue,
-            Err(err) => return Err(err),
-        }
-    }
-
-    Ok(result)
-}
 
 fn get_fn_name<T>(_: T) -> &'static str {
     type_name::<T>()
@@ -849,7 +662,7 @@ fn download_local_aligned_file() {
     let source_ip = "127.0.0.11";
     let server_dir = mk_tmp(download_local_aligned_file);
     let payload_size = 4096;
-    let data = _make_payload(payload_size);
+    let data = make_payload(payload_size);
     let file_name = "file.txt";
     let file = server_dir.join(source_ip).join(file_name);
     _write_file(&file, &data);
@@ -867,7 +680,7 @@ fn download_local_non_aligned_file() {
     let source_ip = "127.0.0.11";
     let server_dir = mk_tmp(download_local_non_aligned_file);
     let payload_size = 4096 + 256;
-    let data = _make_payload(payload_size);
+    let data = make_payload(payload_size);
     let file_name = "file.txt";
     let file = server_dir.join(source_ip).join(file_name);
     _write_file(&file, &data);
@@ -882,7 +695,7 @@ fn download_file_with_root_prefix() {
     let source_ip = "127.0.0.11";
     let server_dir = mk_tmp(download_file_with_root_prefix);
     let payload_size = 512;
-    let data = _make_payload(payload_size);
+    let data = make_payload(payload_size);
     let file_name = "file.txt";
     let file = server_dir.join(source_ip).join(file_name);
     _write_file(&file, &data);
@@ -932,7 +745,7 @@ fn early_terminate() {
     let source_ip = "127.0.0.11";
     let server_dir = mk_tmp(early_terminate);
     let payload_size = 4096;
-    let data = _make_payload(payload_size);
+    let data = make_payload(payload_size);
     let file_name = "file.txt";
     let file = server_dir.join(source_ip).join(file_name);
     _write_file(&file, &data);
@@ -953,7 +766,7 @@ fn change_block_size_local() {
     let source_ip = "127.0.0.11";
     let server_dir = mk_tmp(change_block_size_local);
     let payload_size = 4096;
-    let data = _make_payload(payload_size);
+    let data = make_payload(payload_size);
     let file_name = "file.txt";
     let file = server_dir.join(source_ip).join(file_name);
     _write_file(&file, &data);
@@ -978,7 +791,7 @@ fn request_file_size_local() {
     let source_ip = "127.0.0.11";
     let server_dir = mk_tmp(request_file_size_local);
     let payload_size: usize = 4096;
-    let data = _make_payload(payload_size);
+    let data = make_payload(payload_size);
     let file_name = "file.txt";
     let file = server_dir.join(source_ip).join(file_name);
     _write_file(&file, &data);
@@ -1002,7 +815,7 @@ fn change_timeout() {
     let source_ip = "127.0.0.11";
     let server_dir = mk_tmp(change_timeout);
     let payload_size = 4096;
-    let data = _make_payload(payload_size);
+    let data = make_payload(payload_size);
     let file_name = "file.txt";
     let file = server_dir.join(source_ip).join(file_name);
     _write_file(&file, &data);
@@ -1097,9 +910,9 @@ fn change_timeout() {
 fn test_download_nbd_file_aligned() {
     let source_ip = "127.0.0.11";
     let server_dir = mk_tmp(test_download_nbd_file_aligned);
-    let nbd_url = &_run_nbd_server("127.0.0.2").url;
+    let nbd_process = run_nbd_server("127.0.0.2");
     let config = json!({
-        "url": nbd_url,
+        "url": nbd_process.get_url(),
         "mounts": [
             {
                 "partition": 2,
@@ -1118,7 +931,7 @@ fn test_download_nbd_file_aligned() {
     let client = server.open_paired_client(source_ip);
     let existing_file = "aligned.file";
     let read_data = _download(client, existing_file).unwrap();
-    let data = _make_payload(4194304);
+    let data = make_payload(4194304);
     assert_eq!(read_data, data);
 }
 
@@ -1126,9 +939,9 @@ fn test_download_nbd_file_aligned() {
 fn test_download_nbd_file_nonaligned() {
     let source_ip = "127.0.0.11";
     let server_dir = mk_tmp(test_download_nbd_file_nonaligned);
-    let nbd_url = &_run_nbd_server("127.0.0.2").url;
+    let nbd_process = run_nbd_server("127.0.0.2");
     let config = json!({
-        "url": nbd_url,
+        "url": nbd_process.get_url(),
         "mounts": [
             {
                 "partition": 2,
@@ -1147,7 +960,7 @@ fn test_download_nbd_file_nonaligned() {
     let client = server.open_paired_client(source_ip);
     let existing_file = "nonaligned.file";
     let read_data = _download(client, existing_file).unwrap();
-    let data = _make_payload(4194319);
+    let data = make_payload(4194319);
     assert_eq!(read_data, data);
 }
 
@@ -1155,9 +968,9 @@ fn test_download_nbd_file_nonaligned() {
 fn request_file_size_remote() {
     let source_ip = "127.0.0.11";
     let server_dir = mk_tmp(request_file_size_remote);
-    let nbd_url = &_run_nbd_server("127.0.0.2").url;
+    let nbd_process = run_nbd_server("127.0.0.2");
     let config = json!({
-        "url": nbd_url,
+        "url": nbd_process.get_url(),
         "mounts": [
             {
                 "partition": 2,
@@ -1193,9 +1006,9 @@ fn request_file_size_remote() {
 fn change_block_size_remote() {
     let source_ip = "127.0.0.11";
     let server_dir = mk_tmp(change_block_size_remote);
-    let nbd_url = &_run_nbd_server("127.0.0.2").url;
+    let nbd_process = run_nbd_server("127.0.0.2");
     let config = json!({
-        "url": nbd_url,
+        "url": nbd_process.get_url(),
         "mounts": [
             {
                 "partition": 2,
@@ -1231,9 +1044,9 @@ fn change_block_size_remote() {
 fn test_local_file_takes_precedence() {
     let source_ip = "127.0.0.11";
     let server_dir = mk_tmp(test_local_file_takes_precedence);
-    let nbd_url = &_run_nbd_server("127.0.0.2").url;
+    let nbd_process = run_nbd_server("127.0.0.2");
     let config = json!({
-        "url": nbd_url,
+        "url": nbd_process.get_url(),
         "mounts": [
             {
                 "partition": 2,
@@ -1268,9 +1081,9 @@ fn test_local_file_takes_precedence() {
 fn test_file_not_exists_in_both_local_remote() {
     let source_ip = "127.0.0.11";
     let server_dir = mk_tmp(test_file_not_exists_in_both_local_remote);
-    let nbd_url = &_run_nbd_server("127.0.0.2").url;
+    let nbd_process = run_nbd_server("127.0.0.2");
     let config = json!({
-        "url": nbd_url,
+        "url": nbd_process.get_url(),
         "mounts": [
             {
                 "partition": 2,
