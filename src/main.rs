@@ -1,3 +1,5 @@
+#[cfg(test)]
+mod _tests;
 mod cursor;
 mod fs;
 mod guestfs;
