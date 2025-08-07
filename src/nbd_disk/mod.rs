@@ -303,6 +303,6 @@ impl<'a> Config<'a> for NBDConfig {
         for mountpoint_config in &self.mounts {
             mountpoint_config.mount_suitable(&partitions)?;
         }
-        Ok(Box::new(RemoteChroot::new(Box::new(disk), &self.tftp_root)))
+        Ok(Box::new(RemoteChroot::new(disk, &self.tftp_root)))
     }
 }

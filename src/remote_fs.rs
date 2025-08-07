@@ -6,13 +6,13 @@ use serde_json::Value;
 use std::fmt::{Debug, Display, Formatter};
 use std::path::PathBuf;
 
-pub(super) struct RemoteChroot {
-    disk: Box<dyn ConnectedDisk>,
+pub(super) struct RemoteChroot<T: ConnectedDisk> {
+    disk: T,
     path: PathBuf,
 }
 
-impl RemoteChroot {
-    pub(super) fn new(disk: Box<dyn ConnectedDisk>, path: &str) -> Self {
+impl<T: ConnectedDisk> RemoteChroot<T> {
+    pub(super) fn new(disk: T, path: &str) -> Self {
         Self {
             disk,
             path: PathBuf::from(path),
@@ -20,7 +20,7 @@ impl RemoteChroot {
     }
 }
 
-impl Root for RemoteChroot {
+impl<T: ConnectedDisk> Root for RemoteChroot<T> {
     fn open(&self, path: &str) -> Result<Box<dyn OpenedFile>, FileError> {
         match self.disk.open(self.path.join(path).to_str().unwrap()) {
             Ok(opened_file) => Ok(Box::new(opened_file)),
@@ -29,13 +29,13 @@ impl Root for RemoteChroot {
     }
 }
 
-impl Debug for RemoteChroot {
+impl<T: ConnectedDisk> Debug for RemoteChroot<T> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write! {f, "<{:?} in {}>", self.path, self.disk}
     }
 }
 
-impl Display for RemoteChroot {
+impl<T: ConnectedDisk> Display for RemoteChroot<T> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write! {f, "<{:?} in {}>", self.path, self.disk}
     }

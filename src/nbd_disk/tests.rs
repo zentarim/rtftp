@@ -100,7 +100,7 @@ fn read_existing_aligned_file() {
     let boot = partitions.get(0).unwrap();
     assert!(root.mount_ro("/").is_ok());
     assert!(boot.mount_ro("/boot").is_ok());
-    let chroot = RemoteChroot::new(Box::new(disk), "/boot");
+    let chroot = RemoteChroot::new(disk, "/boot");
     let file = "aligned.file";
     let mut opened = chroot.open(file).unwrap();
     let expected_data = make_payload(opened.get_size().unwrap());
@@ -117,7 +117,7 @@ fn read_existing_nonaligned_file() {
     let boot = partitions.get(0).unwrap();
     assert!(root.mount_ro("/").is_ok());
     assert!(boot.mount_ro("/boot").is_ok());
-    let chroot = RemoteChroot::new(Box::new(disk), "/boot");
+    let chroot = RemoteChroot::new(disk, "/boot");
     let file = "nonaligned.file";
     let mut opened = chroot.open(file).unwrap();
     let expected_data = make_payload(opened.get_size().unwrap());
