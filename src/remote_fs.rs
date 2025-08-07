@@ -1,6 +1,8 @@
 use crate::fs::{FileError, OpenedFile, Root};
 use crate::guestfs::GuestFSError;
 use crate::nbd_disk::{NBDFileReader, Partition};
+use serde::Deserialize;
+use serde_json::Value;
 use std::fmt::{Debug, Display, Formatter};
 use std::path::PathBuf;
 
@@ -43,4 +45,16 @@ pub(super) trait ConnectedDisk: Display {
     fn list_partitions(&mut self) -> Result<Vec<Partition>, GuestFSError>;
 
     fn open(&self, absolute_path: &str) -> Result<NBDFileReader, FileError>;
+}
+
+pub(super) trait Config<'a>: Deserialize<'a> {
+    fn from_json(value: &Value) -> Option<Self>;
+
+    fn connect(&self) -> Result<Box<dyn Root>, VirtualRootError>;
+}
+
+#[derive(Debug)]
+pub(super) enum VirtualRootError {
+    ConfigError(String),
+    SetupError(GuestFSError),
 }

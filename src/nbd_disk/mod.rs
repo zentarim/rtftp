@@ -1,6 +1,6 @@
-use crate::fs::{Config, FileError, OpenedFile, Root, VirtualRootError};
+use crate::fs::{FileError, OpenedFile, Root};
 use crate::guestfs::{GuestFS, GuestFSError};
-use crate::remote_fs::{ConnectedDisk, RemoteChroot};
+use crate::remote_fs::{Config, ConnectedDisk, RemoteChroot, VirtualRootError};
 use serde::Deserialize;
 use serde_json::{Value, from_value};
 use std::fmt::{Debug, Display, Formatter};

@@ -1,9 +1,10 @@
 use crate::cursor::{ReadCursor, WriteCursor};
-use crate::fs::{Config, FileError, OpenedFile, Root, VirtualRootError};
+use crate::fs::{FileError, OpenedFile, Root};
 use crate::local_fs::LocalRoot;
 use crate::messages::{OptionsAcknowledge, ReadRequest, TFTPError, UNDEFINED_ERROR};
 use crate::nbd_disk::NBDConfig;
 use crate::options::{AckTimeout, Blksize, TSize};
+use crate::remote_fs::{Config, VirtualRootError};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::fmt::{Debug, Display, Formatter};
