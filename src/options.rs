@@ -22,16 +22,16 @@ pub(super) struct Blksize {
 
 impl Blksize {
     pub(super) fn find_in(options: &HashMap<String, String>) -> Option<Self> {
-        if let Some(block_size_string) = options.get(BLKSIZE) {
-            if let Ok(block_size) = block_size_string.parse::<usize>() {
-                if block_size < BLOCK_SIZE_LIMIT {
-                    return Some(Self { block_size });
-                } else {
-                    eprintln!(
-                        "Requested block size {block_size} exceeds \
+        if let Some(block_size_string) = options.get(BLKSIZE)
+            && let Ok(block_size) = block_size_string.parse::<usize>()
+        {
+            if block_size < BLOCK_SIZE_LIMIT {
+                return Some(Self { block_size });
+            } else {
+                eprintln!(
+                    "Requested block size {block_size} exceeds \
                         maximum allowed block size {BLOCK_SIZE_LIMIT}"
-                    );
-                }
+                );
             }
         }
         None
@@ -80,15 +80,15 @@ impl AckTimeout {
     }
 
     pub(super) fn find_in(options: &HashMap<String, String>) -> Option<Self> {
-        if let Some(timeout_string) = options.get(TIMEOUT) {
-            if let Ok(timeout) = timeout_string.parse::<usize>() {
-                if timeout <= ACK_TIMEOUT_LIMIT {
-                    return Some(Self { timeout });
-                } else {
-                    eprintln!(
-                        "Requested timeout {timeout} exceeds maximum allowed {ACK_TIMEOUT_LIMIT}"
-                    );
-                }
+        if let Some(timeout_string) = options.get(TIMEOUT)
+            && let Ok(timeout) = timeout_string.parse::<usize>()
+        {
+            if timeout <= ACK_TIMEOUT_LIMIT {
+                return Some(Self { timeout });
+            } else {
+                eprintln!(
+                    "Requested timeout {timeout} exceeds maximum allowed {ACK_TIMEOUT_LIMIT}"
+                );
             }
         }
         None

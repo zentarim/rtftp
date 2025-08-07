@@ -347,10 +347,10 @@ async fn handle_request(
     if send_sessions.len() >= send_sessions.capacity() {
         let error_message = "Maximum sessions per IP exceeded";
         let tftp_error = TFTPError::new(error_message, UNDEFINED_ERROR);
-        if let Ok(to_send) = tftp_error.serialize(&mut send_buffer) {
-            if let Err(error) = datagram_stream.send(&send_buffer[..to_send]).await {
-                eprintln!("{datagram_stream}: Error sending {tftp_error}: {error}");
-            }
+        if let Ok(to_send) = tftp_error.serialize(&mut send_buffer)
+            && let Err(error) = datagram_stream.send(&send_buffer[..to_send]).await
+        {
+            eprintln!("{datagram_stream}: Error sending {tftp_error}: {error}");
         }
         return Err(IrrecoverableError(error_message.to_owned()));
     };
@@ -358,10 +358,10 @@ async fn handle_request(
         Ok(file) => file,
         Err(tftp_error) => {
             eprintln!("{datagram_stream}: {read_request} denied: {tftp_error}");
-            if let Ok(to_send) = tftp_error.serialize(&mut send_buffer) {
-                if let Err(error) = datagram_stream.send(&send_buffer[..to_send]).await {
-                    eprintln!("{datagram_stream}: Error sending {tftp_error}: {error}");
-                }
+            if let Ok(to_send) = tftp_error.serialize(&mut send_buffer)
+                && let Err(error) = datagram_stream.send(&send_buffer[..to_send]).await
+            {
+                eprintln!("{datagram_stream}: Error sending {tftp_error}: {error}");
             }
             return Ok(());
         }
@@ -444,10 +444,10 @@ fn match_ip(path: &Path, ip: &str) -> bool {
 }
 
 fn read_json(path: &Path) -> Option<Value> {
-    if let Ok(content) = fs::read_to_string(path) {
-        if let Ok(json_struct) = serde_json::from_str::<Value>(&content) {
-            return Some(json_struct);
-        }
+    if let Ok(content) = fs::read_to_string(path)
+        && let Ok(json_struct) = serde_json::from_str::<Value>(&content)
+    {
+        return Some(json_struct);
     }
     None
 }
