@@ -1,5 +1,6 @@
 use super::*;
 use crate::_tests::{make_payload, run_nbd_server};
+use crate::fs::Root;
 use serde_json::json;
 use std::time;
 

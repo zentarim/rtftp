@@ -48,9 +48,10 @@ pub(super) trait ConnectedDisk: Display {
 }
 
 pub(super) trait Config<'a>: Deserialize<'a> {
+    type ConnectedRoot: Root;
     fn from_json(value: &Value) -> Option<Self>;
 
-    fn connect(&self) -> Result<Box<dyn Root>, VirtualRootError>;
+    fn connect(&self) -> Result<Self::ConnectedRoot, VirtualRootError>;
 }
 
 #[derive(Debug)]

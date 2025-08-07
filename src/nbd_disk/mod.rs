@@ -1,4 +1,4 @@
-use crate::fs::{FileError, OpenedFile, Root};
+use crate::fs::{FileError, OpenedFile};
 use crate::guestfs::{GuestFS, GuestFSError};
 use crate::remote_fs::{Config, ConnectedDisk, RemoteChroot, VirtualRootError};
 use serde::Deserialize;
@@ -276,6 +276,7 @@ pub(super) struct NBDConfig {
 }
 
 impl<'a> Config<'a> for NBDConfig {
+    type ConnectedRoot = RemoteChroot<NBDDisk>;
     fn from_json(value: &Value) -> Option<Self> {
         match from_value::<Self>(value.clone()) {
             Ok(config) => Some(config),
@@ -285,7 +286,7 @@ impl<'a> Config<'a> for NBDConfig {
             }
         }
     }
-    fn connect(&self) -> Result<Box<dyn Root>, VirtualRootError> {
+    fn connect(&self) -> Result<Self::ConnectedRoot, VirtualRootError> {
         if !self.url.starts_with("nbd://") {
             return Err(VirtualRootError::ConfigError(format!(
                 "Invalid NBD URL: {}",
@@ -303,6 +304,6 @@ impl<'a> Config<'a> for NBDConfig {
         for mountpoint_config in &self.mounts {
             mountpoint_config.mount_suitable(&partitions)?;
         }
-        Ok(Box::new(RemoteChroot::new(disk, &self.tftp_root)))
+        Ok(RemoteChroot::new(disk, &self.tftp_root))
     }
 }

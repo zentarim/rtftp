@@ -400,7 +400,7 @@ fn get_available_remote_roots(tftp_root: &PathBuf, ip: &str) -> Vec<Box<dyn Root
                     match nbd_config.connect() {
                         Ok(disk) => {
                             eprintln!("Connected config {file_path:?}");
-                            result.push(disk);
+                            result.push(Box::new(disk));
                         }
                         Err(VirtualRootError::ConfigError(error)) => {
                             eprintln!("Invalid config {file_path:?}: {error}");
