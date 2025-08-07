@@ -1,6 +1,6 @@
 use crate::fs::{FileError, OpenedFile};
 use crate::guestfs::{GuestFS, GuestFSError};
-use crate::remote_fs::{Config, ConnectedDisk, RemoteChroot, VirtualRootError};
+use crate::remote_fs::{Config, ConnectedDisk, Partition, RemoteChroot, VirtualRootError};
 use serde::Deserialize;
 use serde_json::{Value, from_value};
 use std::fmt::{Debug, Display, Formatter};
@@ -73,10 +73,7 @@ impl ConnectedDisk for NBDDisk {
         eprintln!("{self}: Found partitions: {partitions:?}");
         let mut result: Vec<Partition> = Vec::new();
         for partition_name in partitions {
-            result.push(Partition {
-                handle: self.handle.clone(),
-                device: partition_name,
-            });
+            result.push(Partition::new(self.handle.clone(), partition_name));
         }
         for warning in self.handle.retrieve_appliance_stderr() {
             eprintln!("{self}: {warning}");
@@ -108,30 +105,6 @@ impl ConnectedDisk for NBDDisk {
             Ok(file_reader) => Ok(file_reader),
             Err(guestfs_error) => Err(FileError::UnknownError(guestfs_error.to_string())),
         }
-    }
-}
-
-pub(super) struct Partition {
-    handle: Rc<GuestFS>,
-    device: String,
-}
-
-impl Display for Partition {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write! {f, "<Partition: {}>", self.device}
-    }
-}
-
-impl Debug for Partition {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write! {f, "<Partition: {}>", self.device}
-    }
-}
-
-impl Partition {
-    fn mount_ro(&self, mountpoint: &str) -> Result<(), GuestFSError> {
-        eprintln!("{self}: Mounting to {mountpoint}");
-        self.handle.mount_ro(self.device.as_str(), mountpoint)
     }
 }
 

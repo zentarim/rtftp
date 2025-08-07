@@ -1,10 +1,11 @@
 use crate::fs::{FileError, OpenedFile, Root};
-use crate::guestfs::GuestFSError;
-use crate::nbd_disk::{NBDFileReader, Partition};
+use crate::guestfs::{GuestFS, GuestFSError};
+use crate::nbd_disk::NBDFileReader;
 use serde::Deserialize;
 use serde_json::Value;
 use std::fmt::{Debug, Display, Formatter};
 use std::path::PathBuf;
+use std::rc::Rc;
 
 pub(super) struct RemoteChroot<T: ConnectedDisk> {
     disk: T,
@@ -58,4 +59,34 @@ pub(super) trait Config<'a>: Deserialize<'a> {
 pub(super) enum VirtualRootError {
     ConfigError(String),
     SetupError(GuestFSError),
+}
+
+pub(super) struct Partition {
+    handle: Rc<GuestFS>,
+    device: String,
+}
+
+impl Partition {
+    pub(crate) fn new(handle: Rc<GuestFS>, device: String) -> Self {
+        Self { handle, device }
+    }
+}
+
+impl Display for Partition {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write! {f, "<Partition: {}>", self.device}
+    }
+}
+
+impl Debug for Partition {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write! {f, "<Partition: {}>", self.device}
+    }
+}
+
+impl Partition {
+    pub(crate) fn mount_ro(&self, mountpoint: &str) -> Result<(), GuestFSError> {
+        eprintln!("{self}: Mounting to {mountpoint}");
+        self.handle.mount_ro(self.device.as_str(), mountpoint)
+    }
 }
