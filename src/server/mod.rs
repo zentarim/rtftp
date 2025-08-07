@@ -86,10 +86,10 @@ impl TFTPServer {
             }
             Err(tftp_error) => {
                 eprintln!("{remote}: RRQ parsing error: {tftp_error}");
-                if let Ok(size) = tftp_error.serialize(&mut self.buffer) {
-                    if self.socket.send_to(&self.buffer[..size], remote).is_err() {
-                        eprintln!("{remote}: Error sending {tftp_error:?}");
-                    }
+                if let Ok(size) = tftp_error.serialize(&mut self.buffer)
+                    && self.socket.send_to(&self.buffer[..size], remote).is_err()
+                {
+                    eprintln!("{remote}: Error sending {tftp_error:?}");
                 }
             }
         }

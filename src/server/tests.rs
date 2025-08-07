@@ -170,7 +170,7 @@ impl _TFTPClient {
         })
     }
 
-    fn make_read_request(&mut self, file_name: &str) -> (WriteCursor, usize) {
+    fn make_read_request(&mut self, file_name: &str) -> (WriteCursor<'_>, usize) {
         let mut write_cursor = WriteCursor::new(&mut self.write_buffer);
         _ = write_cursor.put_ushort(_RRQ).unwrap();
         _ = write_cursor.put_string(file_name).unwrap();
