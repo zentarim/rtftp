@@ -253,7 +253,7 @@ struct Mount {
 }
 
 impl Mount {
-    fn mount(&self, available: &[Partition]) -> Result<(), VirtualRootError> {
+    fn mount_suitable(&self, available: &[Partition]) -> Result<(), VirtualRootError> {
         if let Some(partition) = available.get(self.partition - 1) {
             if let Err(guestfs_error) = partition.mount_ro(self.mountpoint.as_str()) {
                 Err(VirtualRootError::SetupError(guestfs_error))
@@ -301,7 +301,7 @@ impl<'a> Config<'a> for NBDConfig {
             Err(error) => return Err(VirtualRootError::SetupError(error)),
         };
         for mountpoint_config in &self.mounts {
-            mountpoint_config.mount(&partitions)?;
+            mountpoint_config.mount_suitable(&partitions)?;
         }
         Ok(Box::new(RemoteChroot::new(Box::new(disk), &self.tftp_root)))
     }
