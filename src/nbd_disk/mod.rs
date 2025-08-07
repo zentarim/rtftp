@@ -81,7 +81,7 @@ impl ConnectedDisk for NBDDisk {
         Ok(result)
     }
 
-    fn open(&self, absolute_path: &str) -> Result<NBDFileReader, FileError> {
+    fn open(&self, absolute_path: &str) -> Result<Box<dyn OpenedFile>, FileError> {
         let file_size = match self.handle.get_size(absolute_path) {
             Ok(file_size) => file_size,
             Err(guestfs_error) => {
@@ -102,7 +102,7 @@ impl ConnectedDisk for NBDDisk {
             file_size,
             display,
         ) {
-            Ok(file_reader) => Ok(file_reader),
+            Ok(file_reader) => Ok(Box::new(file_reader)),
             Err(guestfs_error) => Err(FileError::UnknownError(guestfs_error.to_string())),
         }
     }

@@ -1,6 +1,5 @@
 use crate::fs::{FileError, OpenedFile, Root};
 use crate::guestfs::{GuestFS, GuestFSError};
-use crate::nbd_disk::NBDFileReader;
 use serde::Deserialize;
 use serde_json::Value;
 use std::fmt::{Debug, Display, Formatter};
@@ -24,7 +23,7 @@ impl<T: ConnectedDisk> RemoteChroot<T> {
 impl<T: ConnectedDisk> Root for RemoteChroot<T> {
     fn open(&self, path: &str) -> Result<Box<dyn OpenedFile>, FileError> {
         match self.disk.open(self.path.join(path).to_str().unwrap()) {
-            Ok(opened_file) => Ok(Box::new(opened_file)),
+            Ok(opened_file) => Ok(opened_file),
             Err(err) => Err(err),
         }
     }
@@ -45,7 +44,7 @@ impl<T: ConnectedDisk> Display for RemoteChroot<T> {
 pub(super) trait ConnectedDisk: Display {
     fn list_partitions(&mut self) -> Result<Vec<Partition>, GuestFSError>;
 
-    fn open(&self, absolute_path: &str) -> Result<NBDFileReader, FileError>;
+    fn open(&self, absolute_path: &str) -> Result<Box<dyn OpenedFile>, FileError>;
 }
 
 pub(super) trait Config<'a>: Deserialize<'a> {
