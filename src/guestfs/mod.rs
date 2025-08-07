@@ -107,11 +107,7 @@ unsafe extern "C" {
         mountpoint: *const libc::c_char,
     ) -> libc::c_int;
 
-    fn guestfs_set_append(
-        handle: *const guestfs_h,
-        append: *const libc::c_char,
-        ...
-    ) -> libc::c_int;
+    fn guestfs_set_append(handle: *const guestfs_h, append: *const libc::c_char) -> libc::c_int;
 
     fn guestfs_free_stat(guestfs_free_stat: *const guestfs_stat) -> libc::c_void;
 
