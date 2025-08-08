@@ -1,9 +1,6 @@
-use libc;
 use std::any::type_name;
-use std::ffi::CString;
 use std::fs::{File, create_dir};
 use std::io::BufRead;
-use std::os::fd::{FromRawFd, RawFd};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
 use std::{env, fs, io, thread, time};
@@ -24,7 +21,7 @@ pub(super) fn get_test_qcow() -> PathBuf {
 }
 
 pub(super) fn ensure_prerequisite_disk() {
-    let lock = _explicit_lock().unwrap();
+    let lock = _lock_tests_directory().unwrap();
     if !get_test_qcow().exists() {
         _create_prerequisite_disk()
     }
@@ -57,24 +54,10 @@ fn _create_prerequisite_disk() {
     }
 }
 
-fn _explicit_lock() -> io::Result<File> {
-    let cwd_fd = _open_dir_ro(get_test_data_dir().to_str().unwrap())?;
-    if unsafe { libc::flock(cwd_fd, libc::LOCK_EX) } != 0 {
-        Err(io::Error::last_os_error())
-    } else {
-        Ok(unsafe { File::from_raw_fd(cwd_fd) })
-    }
-}
-
-fn _open_dir_ro(path: &str) -> io::Result<RawFd> {
-    let c_path = CString::new(path)?;
-    let oflags = libc::O_RDONLY | libc::O_DIRECTORY;
-    let fd = unsafe { libc::open(c_path.as_ptr(), oflags) as RawFd };
-    if fd != 0 {
-        Ok(fd)
-    } else {
-        Err(io::Error::last_os_error())
-    }
+fn _lock_tests_directory() -> io::Result<File> {
+    let opened = File::open(get_test_data_dir())?;
+    opened.lock()?;
+    Ok(opened)
 }
 
 pub(super) struct _NBDServerProcess {
@@ -96,7 +79,7 @@ impl Drop for _NBDServerProcess {
 }
 
 pub(super) fn run_nbd_server(listen_ip: &str) -> _NBDServerProcess {
-    let locked_tests_directory = _explicit_lock().unwrap();
+    let locked_tests_directory = _lock_tests_directory().unwrap();
     if !get_test_qcow().exists() {
         _create_prerequisite_disk()
     }
