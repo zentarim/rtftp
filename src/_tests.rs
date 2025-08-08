@@ -96,7 +96,7 @@ impl Drop for _NBDServerProcess {
 }
 
 pub(super) fn run_nbd_server(listen_ip: &str) -> _NBDServerProcess {
-    let lock_file = _explicit_lock().unwrap();
+    let locked_tests_directory = _explicit_lock().unwrap();
     if !get_test_qcow().exists() {
         _create_prerequisite_disk()
     }
@@ -112,7 +112,7 @@ pub(super) fn run_nbd_server(listen_ip: &str) -> _NBDServerProcess {
         .unwrap();
     let listen_port = _get_listen_tcp_port(nbd_process.id())
         .expect(format!("Could not get listener port for {nbd_process:?}").as_str());
-    drop(lock_file);
+    drop(locked_tests_directory);
     let nbd_url = String::from(format!("nbd://{listen_ip}:{listen_port}/{export_name}"));
     eprintln!("Started NBD server on {nbd_url}");
     _NBDServerProcess {
