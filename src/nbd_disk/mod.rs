@@ -98,7 +98,7 @@ impl ConnectedDisk for NBDDisk {
             }
         };
         let display = format!("<{absolute_path} on {self}>");
-        match NBDFileReader::open(
+        match FileReader::open(
             self.handle.clone(),
             absolute_path.to_string(),
             file_size,
@@ -111,7 +111,7 @@ impl ConnectedDisk for NBDDisk {
 }
 
 #[derive(Debug)]
-pub(super) struct NBDFileReader {
+pub(super) struct FileReader {
     handle: Rc<GuestFS>,
     path: String,
     file_size: usize,
@@ -120,7 +120,7 @@ pub(super) struct NBDFileReader {
     display: String,
 }
 
-impl NBDFileReader {
+impl FileReader {
     fn open(
         handle: Rc<GuestFS>,
         path: String,
@@ -151,13 +151,13 @@ impl NBDFileReader {
     }
 }
 
-impl Display for NBDFileReader {
+impl Display for FileReader {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write! {f, "{}", self.display}
     }
 }
 
-impl OpenedFile for NBDFileReader {
+impl OpenedFile for FileReader {
     fn read_to(&mut self, buffer: &mut [u8]) -> Result<usize, FileError> {
         let mut read: usize = 0;
         while self.current_offset < self.file_size && read < buffer.len() {
