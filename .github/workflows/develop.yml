@@ -18,5 +18,8 @@ jobs:
       - name: Prepare environment
         run: sudo ./prepare_debian_environment.sh && sudo chmod o+r "$(readlink -f /boot/vmlinuz)" && sudo chmod 0666 /dev/kvm
 
+      - name: Run linter
+        run: make lint
+
       - name: Run tests
         run: make test
