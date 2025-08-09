@@ -1,6 +1,8 @@
 use crate::fs::{FileError, OpenedFile};
 use crate::guestfs::{GuestFS, GuestFSError};
-use crate::remote_fs::{Config, ConnectedDisk, Mount, Partition, RemoteChroot, VirtualRootError};
+use crate::remote_fs::{
+    Config, ConnectedDisk, FileChunk, Mount, Partition, RemoteChroot, VirtualRootError,
+};
 use serde::Deserialize;
 use serde_json::{Value, from_value};
 use std::fmt::{Debug, Display, Formatter};
@@ -179,43 +181,6 @@ impl OpenedFile for NBDFileReader {
 
     fn get_size(&mut self) -> Result<usize, FileError> {
         Ok(self.file_size)
-    }
-}
-
-struct FileChunk {
-    buffer: Vec<u8>,
-    offset: usize,
-}
-
-impl Debug for FileChunk {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "<FileChunk {}, offset {}>",
-            self.buffer.len(),
-            self.offset
-        )
-    }
-}
-
-impl FileChunk {
-    fn new(buffer: Vec<u8>) -> Self {
-        Self { buffer, offset: 0 }
-    }
-    fn fill(&mut self, buffer: &mut [u8]) -> usize {
-        let available_bytes = &self.buffer[self.offset..];
-        if available_bytes.is_empty() {
-            return 0;
-        }
-        if available_bytes.len() <= buffer.len() {
-            buffer[..available_bytes.len()].copy_from_slice(available_bytes);
-            self.offset += available_bytes.len();
-            available_bytes.len()
-        } else {
-            buffer.copy_from_slice(&available_bytes[..buffer.len()]);
-            self.offset += buffer.len();
-            buffer.len()
-        }
     }
 }
 

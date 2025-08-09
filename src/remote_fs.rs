@@ -112,3 +112,40 @@ impl Mount {
         }
     }
 }
+
+pub(super) struct FileChunk {
+    buffer: Vec<u8>,
+    offset: usize,
+}
+
+impl Debug for FileChunk {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "<FileChunk {}, offset {}>",
+            self.buffer.len(),
+            self.offset
+        )
+    }
+}
+
+impl FileChunk {
+    pub(super) fn new(buffer: Vec<u8>) -> Self {
+        Self { buffer, offset: 0 }
+    }
+    pub(super) fn fill(&mut self, buffer: &mut [u8]) -> usize {
+        let available_bytes = &self.buffer[self.offset..];
+        if available_bytes.is_empty() {
+            return 0;
+        }
+        if available_bytes.len() <= buffer.len() {
+            buffer[..available_bytes.len()].copy_from_slice(available_bytes);
+            self.offset += available_bytes.len();
+            available_bytes.len()
+        } else {
+            buffer.copy_from_slice(&available_bytes[..buffer.len()]);
+            self.offset += buffer.len();
+            buffer.len()
+        }
+    }
+}
