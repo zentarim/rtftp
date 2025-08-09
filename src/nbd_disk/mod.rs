@@ -1,7 +1,7 @@
 use crate::fs::{FileError, OpenedFile};
 use crate::guestfs::{GuestFS, GuestFSError};
 use crate::remote_fs::{
-    Config, ConnectedDisk, FileChunk, Mount, Partition, RemoteChroot, VirtualRootError,
+    Config, ConnectedDisk, FileReader, Mount, Partition, RemoteChroot, VirtualRootError,
 };
 use serde::Deserialize;
 use serde_json::{Value, from_value};
@@ -107,80 +107,6 @@ impl ConnectedDisk for NBDDisk {
             Ok(file_reader) => Ok(Box::new(file_reader)),
             Err(guestfs_error) => Err(FileError::UnknownError(guestfs_error.to_string())),
         }
-    }
-}
-
-#[derive(Debug)]
-pub(super) struct FileReader {
-    handle: Rc<GuestFS>,
-    path: String,
-    file_size: usize,
-    current_offset: usize,
-    chunk: FileChunk,
-    display: String,
-}
-
-impl FileReader {
-    fn open(
-        handle: Rc<GuestFS>,
-        path: String,
-        file_size: usize,
-        display: String,
-    ) -> Result<Self, GuestFSError> {
-        let first_chunk = handle.read_chunk(&path, 0)?;
-        Ok(Self {
-            handle,
-            path,
-            file_size,
-            current_offset: 0,
-            chunk: FileChunk::new(first_chunk),
-            display,
-        })
-    }
-
-    fn buffer_new_chunk(&mut self) -> Result<bool, GuestFSError> {
-        let next_chunk = self
-            .handle
-            .read_chunk(self.path.as_str(), self.current_offset)?;
-        if next_chunk.is_empty() {
-            Ok(false)
-        } else {
-            self.chunk = FileChunk::new(next_chunk);
-            Ok(true)
-        }
-    }
-}
-
-impl Display for FileReader {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write! {f, "{}", self.display}
-    }
-}
-
-impl OpenedFile for FileReader {
-    fn read_to(&mut self, buffer: &mut [u8]) -> Result<usize, FileError> {
-        let mut read: usize = 0;
-        while self.current_offset < self.file_size && read < buffer.len() {
-            let copied = self.chunk.fill(&mut buffer[read..]);
-            if copied == 0 {
-                let chunk_has_data = match self.buffer_new_chunk() {
-                    Ok(result) => result,
-                    Err(guestfs_error) => {
-                        return Err(FileError::UnknownError(guestfs_error.to_string()));
-                    }
-                };
-                if !chunk_has_data {
-                    break;
-                }
-            };
-            read += copied;
-            self.current_offset += copied;
-        }
-        Ok(read)
-    }
-
-    fn get_size(&mut self) -> Result<usize, FileError> {
-        Ok(self.file_size)
     }
 }
 
