@@ -89,3 +89,26 @@ impl Partition {
         self.handle.mount_ro(self.device.as_str(), mountpoint)
     }
 }
+
+#[derive(Debug, Deserialize)]
+pub(super) struct Mount {
+    partition: usize,
+    mountpoint: String,
+}
+
+impl Mount {
+    pub(super) fn mount_suitable(&self, available: &[Partition]) -> Result<(), VirtualRootError> {
+        if let Some(partition) = available.get(self.partition - 1) {
+            if let Err(guestfs_error) = partition.mount_ro(self.mountpoint.as_str()) {
+                Err(VirtualRootError::SetupError(guestfs_error))
+            } else {
+                Ok(())
+            }
+        } else {
+            Err(VirtualRootError::ConfigError(format!(
+                "Can't find a config for partition {}",
+                self.partition
+            )))
+        }
+    }
+}

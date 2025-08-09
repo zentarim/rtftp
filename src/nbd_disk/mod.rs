@@ -1,6 +1,6 @@
 use crate::fs::{FileError, OpenedFile};
 use crate::guestfs::{GuestFS, GuestFSError};
-use crate::remote_fs::{Config, ConnectedDisk, Partition, RemoteChroot, VirtualRootError};
+use crate::remote_fs::{Config, ConnectedDisk, Mount, Partition, RemoteChroot, VirtualRootError};
 use serde::Deserialize;
 use serde_json::{Value, from_value};
 use std::fmt::{Debug, Display, Formatter};
@@ -219,28 +219,6 @@ impl FileChunk {
     }
 }
 
-#[derive(Debug, Deserialize)]
-struct Mount {
-    partition: usize,
-    mountpoint: String,
-}
-
-impl Mount {
-    fn mount_suitable(&self, available: &[Partition]) -> Result<(), VirtualRootError> {
-        if let Some(partition) = available.get(self.partition - 1) {
-            if let Err(guestfs_error) = partition.mount_ro(self.mountpoint.as_str()) {
-                Err(VirtualRootError::SetupError(guestfs_error))
-            } else {
-                Ok(())
-            }
-        } else {
-            Err(VirtualRootError::ConfigError(format!(
-                "Can't find a config for partition {}",
-                self.partition
-            )))
-        }
-    }
-}
 #[derive(Debug, Deserialize)]
 pub(super) struct NBDConfig {
     url: String,
