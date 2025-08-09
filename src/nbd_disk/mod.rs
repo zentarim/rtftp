@@ -11,7 +11,7 @@ use std::rc::Rc;
 #[cfg(test)]
 mod tests;
 
-fn attach_nbd_disk<U: AsRef<str>>(url: U) -> Result<NBDDisk, GuestFSError> {
+fn attach_nbd_disk<U: AsRef<str>>(url: U) -> Result<Disk, GuestFSError> {
     let owned_url = String::from(url.as_ref());
     let handle = GuestFS::new();
     disable_appliance_log_color(&handle)?;
@@ -33,7 +33,7 @@ fn attach_nbd_disk<U: AsRef<str>>(url: U) -> Result<NBDDisk, GuestFSError> {
         Err(GuestFSError::Generic(appliance_errors.join("\n")))
     } else {
         _ = handle.retrieve_appliance_stderr();
-        Ok(NBDDisk {
+        Ok(Disk {
             handle: Rc::new(handle),
             url: owned_url,
         })
@@ -58,18 +58,18 @@ fn add_nbd_device_read_only(handle: &GuestFS, url: &str) -> Result<(), GuestFSEr
 }
 
 #[derive(Debug)]
-pub(super) struct NBDDisk {
+pub(super) struct Disk {
     handle: Rc<GuestFS>,
     url: String,
 }
 
-impl Display for NBDDisk {
+impl Display for Disk {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write! {f, "<NBDDisk: {} [{}]>", self.url, self.handle}
     }
 }
 
-impl ConnectedDisk for NBDDisk {
+impl ConnectedDisk for Disk {
     fn list_partitions(&mut self) -> Result<Vec<Partition>, GuestFSError> {
         let partitions = self.handle.list_partitions()?;
         eprintln!("{self}: Found partitions: {partitions:?}");
@@ -118,7 +118,7 @@ pub(super) struct NBDConfig {
 }
 
 impl<'a> Config<'a> for NBDConfig {
-    type ConnectedRoot = RemoteChroot<NBDDisk>;
+    type ConnectedRoot = RemoteChroot<Disk>;
     fn from_json(value: &Value) -> Option<Self> {
         match from_value::<Self>(value.clone()) {
             Ok(config) => Some(config),
