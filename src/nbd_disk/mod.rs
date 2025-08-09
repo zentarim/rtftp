@@ -1,11 +1,8 @@
-use crate::fs::{FileError, OpenedFile};
 use crate::guestfs::{GuestFS, GuestFSError};
-use crate::remote_fs::{
-    Config, ConnectedDisk, FileReader, Mount, Partition, RemoteChroot, VirtualRootError,
-};
+use crate::remote_fs::{Config, ConnectedDisk, Disk, Mount, RemoteChroot, VirtualRootError};
 use serde::Deserialize;
 use serde_json::{Value, from_value};
-use std::fmt::{Debug, Display, Formatter};
+use std::fmt::Debug;
 use std::rc::Rc;
 
 #[cfg(test)]
@@ -33,10 +30,7 @@ fn attach_nbd_disk<U: AsRef<str>>(url: U) -> Result<Disk, GuestFSError> {
         Err(GuestFSError::Generic(appliance_errors.join("\n")))
     } else {
         _ = handle.retrieve_appliance_stderr();
-        Ok(Disk {
-            handle: Rc::new(handle),
-            url: owned_url,
-        })
+        Ok(Disk::new(Rc::new(handle), owned_url))
     }
 }
 
@@ -55,59 +49,6 @@ fn add_nbd_device_read_only(handle: &GuestFS, url: &str) -> Result<(), GuestFSEr
         "-drive",
         &format!("id=nbd0,file={url},format=raw,if=none,readonly=on"),
     )
-}
-
-#[derive(Debug)]
-pub(super) struct Disk {
-    handle: Rc<GuestFS>,
-    url: String,
-}
-
-impl Display for Disk {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write! {f, "<NBDDisk: {} [{}]>", self.url, self.handle}
-    }
-}
-
-impl ConnectedDisk for Disk {
-    fn list_partitions(&mut self) -> Result<Vec<Partition>, GuestFSError> {
-        let partitions = self.handle.list_partitions()?;
-        eprintln!("{self}: Found partitions: {partitions:?}");
-        let mut result: Vec<Partition> = Vec::new();
-        for partition_name in partitions {
-            result.push(Partition::new(self.handle.clone(), partition_name));
-        }
-        for warning in self.handle.retrieve_appliance_stderr() {
-            eprintln!("{self}: {warning}");
-        }
-        Ok(result)
-    }
-
-    fn open(&self, absolute_path: &str) -> Result<Box<dyn OpenedFile>, FileError> {
-        let file_size = match self.handle.get_size(absolute_path) {
-            Ok(file_size) => file_size,
-            Err(guestfs_error) => {
-                return if guestfs_error
-                    .to_string()
-                    .contains("No such file or directory")
-                {
-                    Err(FileError::FileNotFound)
-                } else {
-                    Err(FileError::UnknownError(guestfs_error.to_string()))
-                };
-            }
-        };
-        let display = format!("<{absolute_path} on {self}>");
-        match FileReader::open(
-            self.handle.clone(),
-            absolute_path.to_string(),
-            file_size,
-            display,
-        ) {
-            Ok(file_reader) => Ok(Box::new(file_reader)),
-            Err(guestfs_error) => Err(FileError::UnknownError(guestfs_error.to_string())),
-        }
-    }
 }
 
 #[derive(Debug, Deserialize)]
