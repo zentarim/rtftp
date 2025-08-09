@@ -42,10 +42,9 @@ impl Display for RemoteChroot {
 }
 
 pub(super) trait Config<'a>: Deserialize<'a> {
-    type ConnectedRoot: Root;
     fn from_json(value: &Value) -> Option<Self>;
 
-    fn connect(&self) -> Result<Self::ConnectedRoot, VirtualRootError>;
+    fn connect(&self) -> Result<RemoteChroot, VirtualRootError>;
 }
 
 #[derive(Debug)]
