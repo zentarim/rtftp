@@ -155,10 +155,14 @@ fn _get_single_socket_inode(pid: u32, timeout: time::Duration) -> io::Result<u64
             }
             1 => return Ok(inodes[0]),
             _ => {
-                return Err(io::Error::new(
-                    io::ErrorKind::Other,
-                    format!("Found unexpected multiple socket inodes: {:?}", inodes),
-                ));
+                eprintln!("Found unexpected multiple socket inodes: {:?}", inodes);
+                if time::Instant::now() > deadline {
+                    return Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        format!("Found unexpected multiple socket inodes: {:?}", inodes),
+                    ));
+                }
+                thread::sleep(time::Duration::from_millis(100));
             }
         }
     }
