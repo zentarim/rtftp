@@ -223,3 +223,62 @@ impl OpenedFile for FileReader {
         Ok(self.file_size)
     }
 }
+
+#[derive(Debug)]
+pub(super) struct Disk {
+    handle: Rc<GuestFS>,
+    url: String,
+}
+
+impl Display for Disk {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write! {f, "<NBDDisk: {} [{}]>", self.url, self.handle}
+    }
+}
+
+impl Disk {
+    pub(super) fn new(handle: Rc<GuestFS>, url: String) -> Self {
+        Self { handle, url }
+    }
+}
+
+impl ConnectedDisk for Disk {
+    fn list_partitions(&mut self) -> Result<Vec<Partition>, GuestFSError> {
+        let partitions = self.handle.list_partitions()?;
+        eprintln!("{self}: Found partitions: {partitions:?}");
+        let mut result: Vec<Partition> = Vec::new();
+        for partition_name in partitions {
+            result.push(Partition::new(self.handle.clone(), partition_name));
+        }
+        for warning in self.handle.retrieve_appliance_stderr() {
+            eprintln!("{self}: {warning}");
+        }
+        Ok(result)
+    }
+
+    fn open(&self, absolute_path: &str) -> Result<Box<dyn OpenedFile>, FileError> {
+        let file_size = match self.handle.get_size(absolute_path) {
+            Ok(file_size) => file_size,
+            Err(guestfs_error) => {
+                return if guestfs_error
+                    .to_string()
+                    .contains("No such file or directory")
+                {
+                    Err(FileError::FileNotFound)
+                } else {
+                    Err(FileError::UnknownError(guestfs_error.to_string()))
+                };
+            }
+        };
+        let display = format!("<{absolute_path} on {self}>");
+        match FileReader::open(
+            self.handle.clone(),
+            absolute_path.to_string(),
+            file_size,
+            display,
+        ) {
+            Ok(file_reader) => Ok(Box::new(file_reader)),
+            Err(guestfs_error) => Err(FileError::UnknownError(guestfs_error.to_string())),
+        }
+    }
+}
