@@ -6,13 +6,13 @@ use std::fmt::{Debug, Display, Formatter};
 use std::path::PathBuf;
 use std::rc::Rc;
 
-pub(super) struct RemoteChroot<T: ConnectedDisk> {
-    disk: T,
+pub(super) struct RemoteChroot {
+    disk: ConnectedDisk,
     path: PathBuf,
 }
 
-impl<T: ConnectedDisk> RemoteChroot<T> {
-    pub(super) fn new(disk: T, path: &str) -> Self {
+impl RemoteChroot {
+    pub(super) fn new(disk: ConnectedDisk, path: &str) -> Self {
         Self {
             disk,
             path: PathBuf::from(path),
@@ -20,7 +20,7 @@ impl<T: ConnectedDisk> RemoteChroot<T> {
     }
 }
 
-impl<T: ConnectedDisk> Root for RemoteChroot<T> {
+impl Root for RemoteChroot {
     fn open(&self, path: &str) -> Result<Box<dyn OpenedFile>, FileError> {
         match self.disk.open(self.path.join(path).to_str().unwrap()) {
             Ok(opened_file) => Ok(opened_file),
@@ -29,22 +29,16 @@ impl<T: ConnectedDisk> Root for RemoteChroot<T> {
     }
 }
 
-impl<T: ConnectedDisk> Debug for RemoteChroot<T> {
+impl Debug for RemoteChroot {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write! {f, "<{:?} in {}>", self.path, self.disk}
     }
 }
 
-impl<T: ConnectedDisk> Display for RemoteChroot<T> {
+impl Display for RemoteChroot {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write! {f, "<{:?} in {}>", self.path, self.disk}
     }
-}
-
-pub(super) trait ConnectedDisk: Display {
-    fn list_partitions(&mut self) -> Result<Vec<Partition>, GuestFSError>;
-
-    fn open(&self, absolute_path: &str) -> Result<Box<dyn OpenedFile>, FileError>;
 }
 
 pub(super) trait Config<'a>: Deserialize<'a> {
@@ -225,25 +219,25 @@ impl OpenedFile for FileReader {
 }
 
 #[derive(Debug)]
-pub(super) struct Disk {
+pub(super) struct ConnectedDisk {
     handle: Rc<GuestFS>,
     url: String,
 }
 
-impl Display for Disk {
+impl Display for ConnectedDisk {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write! {f, "<NBDDisk: {} [{}]>", self.url, self.handle}
     }
 }
 
-impl Disk {
+impl ConnectedDisk {
     pub(super) fn new(handle: Rc<GuestFS>, url: String) -> Self {
         Self { handle, url }
     }
 }
 
-impl ConnectedDisk for Disk {
-    fn list_partitions(&mut self) -> Result<Vec<Partition>, GuestFSError> {
+impl ConnectedDisk {
+    pub(super) fn list_partitions(&mut self) -> Result<Vec<Partition>, GuestFSError> {
         let partitions = self.handle.list_partitions()?;
         eprintln!("{self}: Found partitions: {partitions:?}");
         let mut result: Vec<Partition> = Vec::new();
@@ -256,7 +250,7 @@ impl ConnectedDisk for Disk {
         Ok(result)
     }
 
-    fn open(&self, absolute_path: &str) -> Result<Box<dyn OpenedFile>, FileError> {
+    pub(super) fn open(&self, absolute_path: &str) -> Result<Box<dyn OpenedFile>, FileError> {
         let file_size = match self.handle.get_size(absolute_path) {
             Ok(file_size) => file_size,
             Err(guestfs_error) => {

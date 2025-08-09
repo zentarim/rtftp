@@ -1,5 +1,5 @@
 use crate::guestfs::{GuestFS, GuestFSError};
-use crate::remote_fs::{Config, ConnectedDisk, Disk, Mount, RemoteChroot, VirtualRootError};
+use crate::remote_fs::{Config, ConnectedDisk, Mount, RemoteChroot, VirtualRootError};
 use serde::Deserialize;
 use serde_json::{Value, from_value};
 use std::fmt::Debug;
@@ -8,7 +8,7 @@ use std::rc::Rc;
 #[cfg(test)]
 mod tests;
 
-fn attach_nbd_disk<U: AsRef<str>>(url: U) -> Result<Disk, GuestFSError> {
+fn attach_nbd_disk<U: AsRef<str>>(url: U) -> Result<ConnectedDisk, GuestFSError> {
     let owned_url = String::from(url.as_ref());
     let handle = GuestFS::new();
     disable_appliance_log_color(&handle)?;
@@ -30,7 +30,7 @@ fn attach_nbd_disk<U: AsRef<str>>(url: U) -> Result<Disk, GuestFSError> {
         Err(GuestFSError::Generic(appliance_errors.join("\n")))
     } else {
         _ = handle.retrieve_appliance_stderr();
-        Ok(Disk::new(Rc::new(handle), owned_url))
+        Ok(ConnectedDisk::new(Rc::new(handle), owned_url))
     }
 }
 
@@ -59,7 +59,7 @@ pub(super) struct NBDConfig {
 }
 
 impl<'a> Config<'a> for NBDConfig {
-    type ConnectedRoot = RemoteChroot<Disk>;
+    type ConnectedRoot = RemoteChroot;
     fn from_json(value: &Value) -> Option<Self> {
         match from_value::<Self>(value.clone()) {
             Ok(config) => Some(config),
