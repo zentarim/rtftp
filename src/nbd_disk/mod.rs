@@ -59,7 +59,6 @@ pub(super) struct NBDConfig {
 }
 
 impl<'a> Config<'a> for NBDConfig {
-    type ConnectedRoot = RemoteChroot;
     fn from_json(value: &Value) -> Option<Self> {
         match from_value::<Self>(value.clone()) {
             Ok(config) => Some(config),
@@ -69,7 +68,7 @@ impl<'a> Config<'a> for NBDConfig {
             }
         }
     }
-    fn connect(&self) -> Result<Self::ConnectedRoot, VirtualRootError> {
+    fn connect(&self) -> Result<RemoteChroot, VirtualRootError> {
         if !self.url.starts_with("nbd://") {
             return Err(VirtualRootError::ConfigError(format!(
                 "Invalid NBD URL: {}",
