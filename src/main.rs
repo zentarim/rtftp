@@ -2,6 +2,7 @@
 mod _tests;
 mod cursor;
 mod fs;
+mod fs_watch;
 mod guestfs;
 pub mod local_fs;
 mod messages;
@@ -11,6 +12,7 @@ mod peer_handler;
 mod remote_fs;
 mod server;
 
+use crate::fs_watch::Watch;
 use clap::Parser;
 use server::TFTPServer;
 use std::path::PathBuf;
@@ -38,6 +40,15 @@ struct Args {
     root_dir: PathBuf,
 
     #[arg(
+        short = 'm',
+        long,
+        help = "Monitor configs directory",
+        default_value_t = true,
+        long_help = "Monitor the TFTP root directory in real time and immediately open a remote FS at configs appearance."
+    )]
+    monitor_configs: bool,
+
+    #[arg(
         short = 't',
         long,
         help = "Peer handler inactivity timeout",
@@ -63,13 +74,26 @@ async fn async_main() -> ExitCode {
         }
     };
     let turn_duration = Duration::from_secs(1);
-    let mut server = TFTPServer::new(socket, args.root_dir, args.idle_timeout);
-    tokio::select! {
-        _ = tokio::signal::ctrl_c() => eprintln!("Received SIGINT, shutting down"),
-        _ = server.serve(turn_duration) => {
-            eprintln!("Server is shut down");
-        },
-
+    let mut server = TFTPServer::new(socket, args.root_dir.clone(), args.idle_timeout);
+    if args.monitor_configs {
+        let monitor_directory = args.root_dir.to_string_lossy();
+        let watch = match Watch::new().change().observe(&monitor_directory) {
+            Ok(watch) => watch,
+            Err(error) => {
+                eprintln!("Failed to start watching directory {monitor_directory}: {error}");
+                return ExitCode::FAILURE;
+            }
+        };
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => eprintln!("Received SIGINT, shutting down"),
+            _ = server.serve_augmented(turn_duration, &watch) => {}
+        }
+    } else {
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => eprintln!("Received SIGINT, shutting down"),
+            _ = server.serve(turn_duration) => {}
+        }
     }
+    eprintln!("Server is shut down");
     ExitCode::SUCCESS
 }
