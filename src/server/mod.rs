@@ -1,9 +1,11 @@
+use crate::fs_watch::{Event, Observer};
 use crate::messages::ReadRequest;
 use crate::peer_handler::PeerHandler;
 use std::collections::HashMap;
 use std::fmt::Display;
 use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
+use std::str::FromStr;
 use std::time::Duration;
 use tokio::net::UdpSocket;
 
@@ -38,19 +40,57 @@ impl TFTPServer {
         }
     }
 
+    pub(super) async fn serve_augmented<T: Observer>(
+        &mut self,
+        turn_duration: Duration,
+        fs_observer: &T,
+    ) {
+        eprintln!("{self}: Listening");
+        loop {
+            tokio::select! {
+                _ = tokio::time::sleep(turn_duration) => self.peer_handlers.retain(|_ip_addr, handler| !handler.is_finished()),
+                event = fs_observer.next() => {
+                    if let Some((stem, _extension)) = event.file_name().rsplit_once('.')
+                        && event.is_modify() && let Ok(remote_ip) = IpAddr::from_str(stem) {
+                        eprintln!("{self}: Config for {remote_ip} is modified, explicitly open a new handle");
+                        let new_handler = PeerHandler::new(
+                            remote_ip,
+                            self.socket.local_addr().unwrap().ip(),
+                            self.root_dir.clone(),
+                            self.max_idle_time,
+                        );
+                        if let Some(previous_handler) = self.peer_handlers.insert(remote_ip, new_handler) {
+                            previous_handler.shutdown();
+                        }
+                    }
+                }
+                read_result = self.socket.recv_from(&mut self.buffer) => {
+                    match read_result {
+                        Ok((read_bytes, remote)) => self.handle_request(read_bytes, remote).await,
+                        Err(error) => {
+                            eprintln!("{self}: Socket read error: {error}");
+                            return;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     pub(super) async fn serve(&mut self, turn_duration: Duration) {
         eprintln!("{self}: Listening");
         loop {
-            let future = self.socket.recv_from(&mut self.buffer);
-            match tokio::time::timeout(turn_duration, future).await {
-                Ok(Ok((read_bytes, remote))) => self.handle_request(read_bytes, remote).await,
-                Ok(Err(error)) => {
-                    eprintln!("{self}: Socket read error: {error}");
-                    return;
+            tokio::select! {
+                _ = tokio::time::sleep(turn_duration) => self.peer_handlers.retain(|_ip_addr, handler| !handler.is_finished()),
+                read_result = self.socket.recv_from(&mut self.buffer) => {
+                    match read_result {
+                        Ok((read_bytes, remote)) => self.handle_request(read_bytes, remote).await,
+                        Err(error) => {
+                            eprintln!("{self}: Socket read error: {error}");
+                            return;
+                        }
+                    }
                 }
-                Err(_timeout_error) => self
-                    .peer_handlers
-                    .retain(|_ip_addr, handler| !handler.is_finished()),
             }
         }
     }

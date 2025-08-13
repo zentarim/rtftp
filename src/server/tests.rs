@@ -1,5 +1,6 @@
 use super::*;
 use crate::_tests::{make_payload, mk_tmp, run_nbd_server};
+use crate::Watch;
 use crate::cursor::{ReadCursor, WriteCursor};
 use serde_json::json;
 use std::ffi::CStr;
@@ -49,6 +50,39 @@ impl _ThreadedTFTPServer {
                 },
             )
         });
+        Self {
+            shutdown_notify,
+            handle: Some(handle),
+            listen_socket,
+        }
+    }
+
+    async fn new_augmented(root_dir: PathBuf, bind_ip: &str, idle_timeout: u64) -> Self {
+        let running_notify = Arc::new(Notify::new());
+        let running_notify_clone = running_notify.clone();
+        let shutdown_notify = Arc::new(Notify::new());
+        let shutdown_received = shutdown_notify.clone();
+        let turn_duration = time::Duration::from_secs(1);
+        let server_socket = UdpSocket::bind((bind_ip, 0)).await.unwrap();
+        let listen_socket = server_socket.local_addr().unwrap();
+        let handle = thread::spawn(move || {
+            LocalSet::new().block_on(
+                &Builder::new_current_thread().enable_all().build().unwrap(),
+                async move {
+                    let observer = Watch::new()
+                        .change()
+                        .observe(&root_dir.to_string_lossy())
+                        .unwrap();
+                    let mut server = TFTPServer::new(server_socket, root_dir, idle_timeout);
+                    running_notify_clone.notify_one();
+                    tokio::select! {
+                        _ = server.serve_augmented(turn_duration, &observer) => {},
+                        _ = shutdown_received.notified() => eprintln!("Shutdown requested"),
+                    }
+                },
+            )
+        });
+        running_notify.notified().await;
         Self {
             shutdown_notify,
             handle: Some(handle),
@@ -1141,4 +1175,33 @@ async fn test_file_not_exists_in_both_local_remote() {
         matches!(&read_result, Err(message) if message.to_string().contains("File not found")),
         "Unexpected error {read_result:?}"
     );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_download_nbd_file_nonaligned_augmented() {
+    let source_ip = "127.0.0.11";
+    let server_dir = mk_tmp(test_download_nbd_file_nonaligned_augmented);
+    let nbd_process = run_nbd_server("127.0.0.2");
+    let server = _ThreadedTFTPServer::new_augmented(server_dir.clone(), "127.0.0.10", 30).await;
+    let config = json!({
+        "url": nbd_process.get_url(),
+        "mounts": [
+            {
+                "partition": 2,
+                "mountpoint": "/",
+            },
+                {
+                "partition": 1,
+                "mountpoint": "/boot",
+            }
+        ],
+        "tftp_root": "/boot",
+    });
+    let nbd_share_config_file = server_dir.join(format!("{}.nbd", source_ip));
+    _write_file(&nbd_share_config_file, config.to_string().as_bytes());
+    let client = server.open_paired_client(source_ip).await;
+    let existing_file = "nonaligned.file";
+    let read_data = _download(client, existing_file).await.unwrap();
+    let data = make_payload(4194319);
+    assert_eq!(read_data, data);
 }
