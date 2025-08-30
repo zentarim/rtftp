@@ -2,11 +2,10 @@ use crate::messages::ReadRequest;
 use crate::peer_handler::PeerHandler;
 use std::collections::HashMap;
 use std::fmt::Display;
-use std::io::ErrorKind;
-use std::net::{IpAddr, SocketAddr, UdpSocket};
+use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
-use std::sync::atomic;
 use std::time::Duration;
+use tokio::net::UdpSocket;
 
 #[cfg(test)]
 mod tests;
@@ -38,32 +37,25 @@ impl TFTPServer {
             display,
         }
     }
-    pub(super) fn serve_until_shutdown(
-        &mut self,
-        shutdown_requested: &atomic::AtomicBool,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+
+    pub(super) async fn serve(&mut self, turn_duration: Duration) {
         eprintln!("{self}: Listening");
-        self.socket.set_read_timeout(Some(Duration::new(1, 0)))?;
         loop {
-            match self.socket.recv_from(&mut self.buffer) {
-                Ok((read_bytes, remote)) => self.handle_request(read_bytes, remote),
-                Err(error) if error.kind() == ErrorKind::Interrupted => continue,
-                Err(error) if error.kind() == ErrorKind::WouldBlock => {
-                    if shutdown_requested.load(atomic::Ordering::Relaxed) {
-                        break Ok(());
-                    } else {
-                        self.peer_handlers
-                            .retain(|_ip_addr, handler| !handler.is_finished());
-                    }
+            let future = self.socket.recv_from(&mut self.buffer);
+            match tokio::time::timeout(turn_duration, future).await {
+                Ok(Ok((read_bytes, remote))) => self.handle_request(read_bytes, remote).await,
+                Ok(Err(error)) => {
+                    eprintln!("{self}: Socket read error: {error}");
+                    return;
                 }
-                Err(error) => {
-                    break Err(Box::new(error));
-                }
+                Err(_timeout_error) => self
+                    .peer_handlers
+                    .retain(|_ip_addr, handler| !handler.is_finished()),
             }
         }
     }
 
-    fn handle_request(&mut self, size: usize, remote: SocketAddr) {
+    async fn handle_request(&mut self, size: usize, remote: SocketAddr) {
         match ReadRequest::parse(&self.buffer[..size]) {
             Ok(rrq) => {
                 eprintln!("Received {rrq} from {remote}");
@@ -77,7 +69,7 @@ impl TFTPServer {
                         self.max_idle_time,
                     )
                 });
-                if !handler.feed(remote.port(), rrq) {
+                if !handler.feed(remote.port(), rrq).await {
                     eprintln!("{handler}: Failed to feed. Shutting down ...");
                     if let Some(handler) = self.peer_handlers.remove(&remote_ip) {
                         handler.shutdown();
@@ -87,7 +79,11 @@ impl TFTPServer {
             Err(tftp_error) => {
                 eprintln!("{remote}: RRQ parsing error: {tftp_error}");
                 if let Ok(size) = tftp_error.serialize(&mut self.buffer)
-                    && self.socket.send_to(&self.buffer[..size], remote).is_err()
+                    && self
+                        .socket
+                        .send_to(&self.buffer[..size], remote)
+                        .await
+                        .is_err()
                 {
                     eprintln!("{remote}: Error sending {tftp_error:?}");
                 }
