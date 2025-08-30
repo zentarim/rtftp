@@ -10,16 +10,15 @@ mod options;
 mod peer_handler;
 mod remote_fs;
 mod server;
-mod shutdown_handler;
-
-use std::net::UdpSocket;
-use std::path::PathBuf;
-use std::process::ExitCode;
-use std::string::String;
 
 use clap::Parser;
 use server::TFTPServer;
-use shutdown_handler::register_shutdown_flag;
+use std::path::PathBuf;
+use std::process::ExitCode;
+use std::string::String;
+use std::time::Duration;
+use tokio::runtime::Builder;
+use tokio::task::LocalSet;
 
 #[derive(Parser, Debug)]
 #[command(color = clap::ColorChoice::Never)]
@@ -48,22 +47,29 @@ struct Args {
 }
 
 fn main() -> ExitCode {
+    LocalSet::new().block_on(
+        &Builder::new_current_thread().enable_all().build().unwrap(),
+        async_main(),
+    )
+}
+
+async fn async_main() -> ExitCode {
     let args = Args::parse();
-    let shutdown_requested_flag = register_shutdown_flag()
-        .unwrap_or_else(|error| panic!("Shutdown flag register error: {error}"));
-    let socket = match UdpSocket::bind((args.listen_ip, args.listen_port)) {
-        Ok(socket) => socket,
+    let socket = match tokio::net::UdpSocket::bind((args.listen_ip, args.listen_port)).await {
+        Ok(udp_socket) => udp_socket,
         Err(error) => {
             eprintln!("Socket bind error: {error}");
             return ExitCode::FAILURE;
         }
     };
+    let turn_duration = Duration::from_secs(1);
     let mut server = TFTPServer::new(socket, args.root_dir, args.idle_timeout);
-    if let Err(error) = server.serve_until_shutdown(shutdown_requested_flag) {
-        eprintln!("Unknown error occurred: {error}");
-        ExitCode::FAILURE
-    } else {
-        eprintln!("Exited");
-        ExitCode::SUCCESS
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => eprintln!("Received SIGINT, shutting down"),
+        _ = server.serve(turn_duration) => {
+            eprintln!("Server is shut down");
+        },
+
     }
+    ExitCode::SUCCESS
 }

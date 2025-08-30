@@ -261,9 +261,10 @@ impl PeerHandler {
         self.thread_handle.join().expect("Can't join thread");
     }
 
-    pub(super) fn feed(&mut self, sender_port: u16, request: ReadRequest) -> bool {
+    pub(super) async fn feed(&mut self, sender_port: u16, request: ReadRequest) -> bool {
         self.requests_channel
-            .blocking_send((sender_port, request))
+            .send((sender_port, request))
+            .await
             .is_ok()
     }
 

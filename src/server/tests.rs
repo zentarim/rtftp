@@ -4,13 +4,15 @@ use crate::cursor::{ReadCursor, WriteCursor};
 use serde_json::json;
 use std::ffi::CStr;
 use std::fs::{File, Permissions, set_permissions};
-use std::io::Write;
+use std::io::{ErrorKind, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
 use std::thread::JoinHandle;
 use std::{fmt, fs, io, thread, time};
+use tokio::runtime::Builder;
+use tokio::sync::Notify;
+use tokio::task::LocalSet;
 
 const _DATA_PATTERN: &str = "ARBITRARY DATA";
 const _BUFFER_SIZE: usize = 1536;
@@ -23,42 +25,49 @@ const _OACK: u16 = 0x06;
 
 #[derive(Debug)]
 struct _ThreadedTFTPServer {
-    shutdown_flag: Arc<AtomicBool>,
+    shutdown_notify: Arc<Notify>,
     handle: Option<JoinHandle<()>>,
     listen_socket: SocketAddr,
 }
 
 impl _ThreadedTFTPServer {
-    fn new(root_dir: PathBuf, bind_ip: &str, idle_timeout: u64) -> Self {
-        let server_socket = UdpSocket::bind((bind_ip, 0)).unwrap();
+    async fn new(root_dir: PathBuf, bind_ip: &str, idle_timeout: u64) -> Self {
+        let shutdown_notify = Arc::new(Notify::new());
+        let shutdown_received = shutdown_notify.clone();
+        let turn_duration = time::Duration::from_secs(1);
+        let server_socket = UdpSocket::bind((bind_ip, 0)).await.unwrap();
         let listen_socket = server_socket.local_addr().unwrap();
-        let mut server = TFTPServer::new(server_socket, root_dir, idle_timeout);
-        let shutdown_flag = Arc::new(AtomicBool::new(false));
-        let shutdown_flag_clone = shutdown_flag.clone();
         let handle = thread::spawn(move || {
-            if let Err(serve_result) = server.serve_until_shutdown(&*shutdown_flag_clone) {
-                eprintln!("{server} shutdown error: {serve_result:?}");
-            } else {
-                eprintln!("{server} shutdown successfully");
-            }
+            LocalSet::new().block_on(
+                &Builder::new_current_thread().enable_all().build().unwrap(),
+                async move {
+                    let mut server = TFTPServer::new(server_socket, root_dir, idle_timeout);
+                    tokio::select! {
+                        _ = server.serve(turn_duration) => {},
+                        _ = shutdown_received.notified() => eprintln!("Shutdown requested"),
+                    }
+                },
+            )
         });
         Self {
-            shutdown_flag,
+            shutdown_notify,
             handle: Some(handle),
             listen_socket,
         }
     }
 
-    fn open_paired_client(&self, source_ip: &str) -> _TFTPClient {
-        _TFTPClient::new(UdpSocket::bind((source_ip, 0)).unwrap(), self.listen_socket)
+    async fn open_paired_client(&self, source_ip: &str) -> _TFTPClient {
+        _TFTPClient::new(
+            UdpSocket::bind((source_ip, 0)).await.unwrap(),
+            self.listen_socket,
+        )
     }
 }
 
 impl Drop for _ThreadedTFTPServer {
     fn drop(&mut self) {
-        self.shutdown_flag.store(true, atomic::Ordering::Relaxed);
-        let handle = self.handle.take().unwrap();
-        handle.join().unwrap();
+        self.shutdown_notify.notify_one();
+        self.handle.take().unwrap().join().unwrap();
     }
 }
 
@@ -133,10 +142,14 @@ impl _TFTPClient {
         }
     }
 
-    fn send_plain_read_request(mut self, file_name: &str) -> io::Result<_SentPlainReadRequest> {
+    async fn send_plain_read_request(
+        mut self,
+        file_name: &str,
+    ) -> io::Result<_SentPlainReadRequest> {
         let (_write_cursor, buffer_size) = self.make_read_request(file_name);
         self.local_socket
-            .send_to(&self.write_buffer[..buffer_size], &self.remote_addr)?;
+            .send_to(&self.write_buffer[..buffer_size], &self.remote_addr)
+            .await?;
         Ok(_SentPlainReadRequest {
             file_name: file_name.to_string(),
             local_socket: self.local_socket,
@@ -147,7 +160,7 @@ impl _TFTPClient {
         })
     }
 
-    fn send_optioned_read_request(
+    async fn send_optioned_read_request(
         mut self,
         file_name: &str,
         options: &HashMap<String, String>,
@@ -158,7 +171,8 @@ impl _TFTPClient {
             buffer_size = write_cursor.put_string(option_value).unwrap();
         }
         self.local_socket
-            .send_to(&self.write_buffer[..buffer_size], &self.remote_addr)?;
+            .send_to(&self.write_buffer[..buffer_size], &self.remote_addr)
+            .await?;
         Ok(_SentReadRequestWithOpts {
             file_name: file_name.to_string(),
             options: options.clone(),
@@ -206,8 +220,8 @@ impl _DatagramStream {
         }
     }
 
-    fn send(&self, buffer: &[u8]) -> io::Result<()> {
-        match self.local_socket.send_to(buffer, self.peer_address) {
+    async fn send(&self, buffer: &[u8]) -> io::Result<()> {
+        match self.local_socket.send_to(buffer, self.peer_address).await {
             Ok(sent) => {
                 if sent != buffer.len() {
                     Err(ErrorKind::ConnectionReset.into())
@@ -219,13 +233,17 @@ impl _DatagramStream {
         }
     }
 
-    fn recv(&self, buffer: &mut [u8], read_timeout: usize, min_size: usize) -> io::Result<usize> {
+    async fn recv(
+        &self,
+        buffer: &mut [u8],
+        read_timeout: usize,
+        min_size: usize,
+    ) -> io::Result<usize> {
         let mut now = time::Instant::now();
         let end_at = now + Duration::from_secs(read_timeout as u64);
         while now <= end_at {
-            self.local_socket.set_read_timeout(Some(end_at - now))?;
-            match self.local_socket.recv_from(buffer) {
-                Ok((recv_size, remote_address)) => {
+            match tokio::time::timeout(end_at - now, self.local_socket.recv_from(buffer)).await {
+                Ok(Ok((recv_size, remote_address))) => {
                     if remote_address != self.peer_address {
                         eprintln!(
                             "{self}: Ignore datagram {recv_size} long from alien {remote_address}"
@@ -236,10 +254,8 @@ impl _DatagramStream {
                         return Ok(recv_size);
                     }
                 }
-                Err(error) if error.kind() == ErrorKind::WouldBlock => {
-                    return Err(ErrorKind::TimedOut.into());
-                }
-                Err(error) => return Err(error),
+                Ok(Err(error)) => return Err(error),
+                Err(_timeout_error) => return Err(ErrorKind::TimedOut.into()),
             }
             now = time::Instant::now();
         }
@@ -270,12 +286,13 @@ impl fmt::Debug for _SentReadRequestWithOpts {
 }
 
 impl _SentReadRequestWithOpts {
-    fn read_oack(mut self, read_timeout: usize) -> Result<_OACK, _Error<Self>> {
-        self.local_socket
-            .set_read_timeout(Some(Duration::from_secs(read_timeout as u64)))
-            .unwrap();
-        match self.local_socket.recv_from(&mut self.read_buffer) {
-            Ok((read_bytes, remote_address)) if remote_address.ip() == self.remote_addr.ip() => {
+    async fn read_oack(mut self, read_timeout: usize) -> Result<_OACK, _Error<Self>> {
+        let duration = time::Duration::from_secs(read_timeout as u64);
+        let read_future = self.local_socket.recv_from(&mut self.read_buffer);
+        match tokio::time::timeout(duration, read_future).await {
+            Ok(Ok((read_bytes, remote_address)))
+                if remote_address.ip() == self.remote_addr.ip() =>
+            {
                 let mut read_cursor = ReadCursor::new(&mut self.read_buffer[..read_bytes]);
                 match read_cursor.extract_ushort() {
                     Ok(code) if code == _OACK => Ok(_OACK {
@@ -295,22 +312,20 @@ impl _SentReadRequestWithOpts {
                     Err(parse_error) => Err(_Error::ParseError(format!("{parse_error:?}"))),
                 }
             }
-            Ok((read_bytes, remote_address)) => Err(_Error::UnexpectedPeer(
+            Ok(Ok((read_bytes, remote_address))) => Err(_Error::UnexpectedPeer(
                 remote_address.ip(),
                 self.read_buffer[..read_bytes].to_vec(),
             )),
-            Err(error) if error.kind() == ErrorKind::TimedOut => {
-                Err(_Error::Timeout(_SentReadRequestWithOpts {
-                    file_name: self.file_name,
-                    options: self.options,
-                    local_socket: self.local_socket,
-                    remote_addr: self.remote_addr,
-                    read_buffer: self.read_buffer,
-                    write_buffer: self.write_buffer,
-                    sent_bytes: self.sent_bytes,
-                }))
-            }
-            Err(error) => Err(_Error::IO(error)),
+            Ok(Err(error)) => Err(_Error::IO(error)),
+            Err(_timeout_error) => Err(_Error::Timeout(_SentReadRequestWithOpts {
+                file_name: self.file_name,
+                options: self.options,
+                local_socket: self.local_socket,
+                remote_addr: self.remote_addr,
+                read_buffer: self.read_buffer,
+                write_buffer: self.write_buffer,
+                sent_bytes: self.sent_bytes,
+            })),
         }
     }
 }
@@ -335,12 +350,13 @@ impl fmt::Debug for _SentPlainReadRequest {
 }
 
 impl _SentPlainReadRequest {
-    fn read_next(mut self, read_timeout: usize) -> Result<_Block, _Error<Self>> {
-        self.local_socket
-            .set_read_timeout(Some(Duration::from_secs(read_timeout as u64)))
-            .unwrap();
-        match self.local_socket.recv_from(&mut self.read_buffer) {
-            Ok((read_bytes, remote_address)) if remote_address.ip() == self.remote_addr.ip() => {
+    async fn read_next(mut self, read_timeout: usize) -> Result<_Block, _Error<Self>> {
+        let duration = time::Duration::from_secs(read_timeout as u64);
+        let read_future = self.local_socket.recv_from(&mut self.read_buffer);
+        match tokio::time::timeout(duration, read_future).await {
+            Ok(Ok((read_bytes, remote_address)))
+                if remote_address.ip() == self.remote_addr.ip() =>
+            {
                 let mut read_cursor = ReadCursor::new(&mut self.read_buffer[..read_bytes]);
                 match read_cursor.extract_ushort() {
                     Ok(code) if code == _DATA => Ok(_Block {
@@ -360,21 +376,19 @@ impl _SentPlainReadRequest {
                     Err(parse_error) => Err(_Error::ParseError(format!("{parse_error:?}"))),
                 }
             }
-            Ok((read_bytes, remote_address)) => Err(_Error::UnexpectedPeer(
+            Ok(Ok((read_bytes, remote_address))) => Err(_Error::UnexpectedPeer(
                 remote_address.ip(),
                 self.read_buffer[..read_bytes].to_vec(),
             )),
-            Err(error) if error.kind() == ErrorKind::TimedOut => {
-                Err(_Error::Timeout(_SentPlainReadRequest {
-                    file_name: self.file_name,
-                    local_socket: self.local_socket,
-                    remote_addr: self.remote_addr,
-                    read_buffer: self.read_buffer,
-                    write_buffer: self.write_buffer,
-                    sent_bytes: self.sent_bytes,
-                }))
-            }
-            Err(error) => Err(_Error::IO(error)),
+            Ok(Err(error)) => Err(_Error::IO(error)),
+            Err(_timeout_error) => Err(_Error::Timeout(_SentPlainReadRequest {
+                file_name: self.file_name,
+                local_socket: self.local_socket,
+                remote_addr: self.remote_addr,
+                read_buffer: self.read_buffer,
+                write_buffer: self.write_buffer,
+                sent_bytes: self.sent_bytes,
+            })),
         }
     }
 }
@@ -401,12 +415,13 @@ impl _OACK {
         }
         fields
     }
-    fn acknowledge(mut self) -> Result<_SentACK, _Error<Self>> {
+    async fn acknowledge(mut self) -> Result<_SentACK, _Error<Self>> {
         let mut write_cursor = WriteCursor::new(&mut self.write_buffer);
         _ = write_cursor.put_ushort(_ACK).unwrap();
         let buffer_size = write_cursor.put_ushort(0u16).unwrap();
         self.datagram_stream
             .send(&self.write_buffer[..buffer_size])
+            .await
             .or_else(|error| Err(_Error::IO(error)))?;
         Ok(_SentACK {
             datagram_stream: self.datagram_stream,
@@ -434,13 +449,14 @@ impl _Block {
     fn data(&self) -> &[u8] {
         &self.read_buffer[_U16_SIZE * 2..self.read_bytes]
     }
-    fn acknowledge(mut self) -> Result<_SentACK, _Error<Self>> {
+    async fn acknowledge(mut self) -> Result<_SentACK, _Error<Self>> {
         let mut write_cursor = WriteCursor::new(&mut self.write_buffer);
         _ = write_cursor.put_ushort(_ACK).unwrap();
         let block_num = u16::from_be_bytes([self.read_buffer[2], self.read_buffer[3]]);
         let buffer_size = write_cursor.put_ushort(block_num).unwrap();
         self.datagram_stream
             .send(&self.write_buffer[..buffer_size])
+            .await
             .unwrap();
         Ok(_SentACK {
             datagram_stream: self.datagram_stream,
@@ -450,13 +466,14 @@ impl _Block {
         })
     }
 
-    fn send_error(mut self, code: u16, message: &str) -> Result<_SentError, _Error<Self>> {
+    async fn send_error(mut self, code: u16, message: &str) -> Result<_SentError, _Error<Self>> {
         let mut write_cursor = WriteCursor::new(&mut self.write_buffer);
         _ = write_cursor.put_ushort(_ERR).unwrap();
         _ = write_cursor.put_ushort(code).unwrap();
         let buffer_size = write_cursor.put_string(message).unwrap();
         self.datagram_stream
             .send(&self.write_buffer[..buffer_size])
+            .await
             .unwrap();
         Ok(_SentError {
             datagram_stream: self.datagram_stream,
@@ -485,12 +502,13 @@ impl fmt::Debug for _SentACK {
 }
 
 impl _SentACK {
-    fn read_next(mut self, read_timeout: usize) -> Result<_Block, _Error<Self>> {
-        match self
+    async fn read_next(mut self, read_timeout: usize) -> Result<_Block, _Error<Self>> {
+        let duration = time::Duration::from_secs(read_timeout as u64);
+        let read_future = self
             .datagram_stream
-            .recv(&mut self.read_buffer, read_timeout, 4)
-        {
-            Ok(read_bytes) => {
+            .recv(&mut self.read_buffer, read_timeout, 4);
+        match tokio::time::timeout(duration, read_future).await {
+            Ok(Ok(read_bytes)) => {
                 let mut read_cursor = ReadCursor::new(&mut self.read_buffer[..read_bytes]);
                 match read_cursor.extract_ushort() {
                     Ok(code) if code == _DATA => Ok(_Block {
@@ -510,8 +528,8 @@ impl _SentACK {
                     Err(parse_error) => Err(_Error::ParseError(format!("{parse_error:?}"))),
                 }
             }
-            Err(error) if error.kind() == ErrorKind::TimedOut => Err(_Error::Timeout(self)),
-            Err(error) => Err(_Error::IO(error)),
+            Ok(Err(err)) => Err(_Error::IO(err)),
+            Err(_timeout_error) => Err(_Error::Timeout(self)),
         }
     }
 }
@@ -535,10 +553,11 @@ impl fmt::Debug for _SentError {
 }
 
 impl _SentError {
-    fn read_some(&mut self, read_timeout: usize) -> io::Result<&[u8]> {
+    async fn read_some(&mut self, read_timeout: usize) -> io::Result<&[u8]> {
         let recv_bytes = self
             .datagram_stream
-            .recv(&mut self.read_buffer, read_timeout, 0)?;
+            .recv(&mut self.read_buffer, read_timeout, 0)
+            .await?;
         Ok(self.read_buffer[..recv_bytes].as_ref())
     }
 }
@@ -549,16 +568,18 @@ fn _write_file(path: &PathBuf, data: &[u8]) {
     file.write_all(data).unwrap();
 }
 
-fn _download(client: _TFTPClient, file: &str) -> Result<Vec<u8>, _DownloadError> {
+async fn _download(client: _TFTPClient, file: &str) -> Result<Vec<u8>, _DownloadError> {
     let default_timeout: usize = 5;
     let default_block_size: usize = 512;
     let mut read_data: Vec<u8> = Vec::new();
     let sent_request = client
         .send_plain_read_request(file)
+        .await
         .map_err(|error| _DownloadError::from(error))?;
     let mut block: Option<_Block> = Some(
         sent_request
             .read_next(default_timeout)
+            .await
             .map_err(|error| _DownloadError::from(error))?,
     );
     while let Some(_block) = block.take() {
@@ -566,11 +587,13 @@ fn _download(client: _TFTPClient, file: &str) -> Result<Vec<u8>, _DownloadError>
         read_data.extend(_block.data());
         let sent_ack = _block
             .acknowledge()
+            .await
             .map_err(|error| _DownloadError::from(error))?;
         if recv_block_len == default_block_size {
             block = Some(
                 sent_ack
                     .read_next(default_timeout)
+                    .await
                     .map_err(|error| _DownloadError::from(error))?,
             );
         }
@@ -602,18 +625,19 @@ impl From<io::Error> for _DownloadError {
     }
 }
 
-#[test]
-fn send_wrong_request_type() {
+#[tokio::test(flavor = "current_thread")]
+async fn send_wrong_request_type() {
     let source_ip = "127.0.0.11";
     let server_dir = mk_tmp(send_wrong_request_type);
-    let server = _ThreadedTFTPServer::new(server_dir, "127.0.0.10", 30);
+    let server = _ThreadedTFTPServer::new(server_dir, "127.0.0.10", 30).await;
     let wrong_code_packet = b"\xAAoctet\x00irrelevant\x00";
-    let local_socket = UdpSocket::bind((source_ip, 0)).unwrap();
+    let local_socket = UdpSocket::bind((source_ip, 0)).await.unwrap();
     local_socket
         .send_to(wrong_code_packet, server.listen_socket)
+        .await
         .unwrap();
     let mut buffer = [0u8; _BUFFER_SIZE];
-    let bytes_read = local_socket.recv(&mut buffer).unwrap();
+    let bytes_read = local_socket.recv(&mut buffer).await.unwrap();
     let error_message = CStr::from_bytes_with_nul(&buffer[4..bytes_read]).unwrap();
     assert!(
         error_message
@@ -623,18 +647,19 @@ fn send_wrong_request_type() {
     );
 }
 
-#[test]
-fn send_wrong_content_type() {
+#[tokio::test(flavor = "current_thread")]
+async fn send_wrong_content_type() {
     let source_ip = "127.0.0.11";
     let server_dir = mk_tmp(send_wrong_content_type);
-    let server = _ThreadedTFTPServer::new(server_dir, "127.0.0.10", 30);
+    let server = _ThreadedTFTPServer::new(server_dir, "127.0.0.10", 30).await;
     let wrong_code_packet = b"\x00\x01email\x00irrelevant\x00";
-    let local_socket = UdpSocket::bind((source_ip, 0)).unwrap();
+    let local_socket = UdpSocket::bind((source_ip, 0)).await.unwrap();
     local_socket
         .send_to(wrong_code_packet, server.listen_socket)
+        .await
         .unwrap();
     let mut buffer = [0u8; _BUFFER_SIZE];
-    let bytes_read = local_socket.recv(&mut buffer).unwrap();
+    let bytes_read = local_socket.recv(&mut buffer).await.unwrap();
     let error_message = CStr::from_bytes_with_nul(&buffer[4..bytes_read]).unwrap();
     assert!(
         error_message
@@ -644,8 +669,8 @@ fn send_wrong_content_type() {
     );
 }
 
-#[test]
-fn download_local_aligned_file() {
+#[tokio::test(flavor = "current_thread")]
+async fn download_local_aligned_file() {
     let source_ip = "127.0.0.11";
     let server_dir = mk_tmp(download_local_aligned_file);
     let payload_size = 4096;
@@ -653,17 +678,17 @@ fn download_local_aligned_file() {
     let file_name = "file.txt";
     let file = server_dir.join(source_ip).join(file_name);
     _write_file(&file, &data);
-    let server = _ThreadedTFTPServer::new(server_dir, "127.0.0.10", 30);
-    let client = server.open_paired_client(source_ip);
-    let read_result = _download(client, file_name);
+    let server = _ThreadedTFTPServer::new(server_dir, "127.0.0.10", 30).await;
+    let client = server.open_paired_client(source_ip).await;
+    let read_result = _download(client, file_name).await;
     assert!(
         matches!(&read_result, Ok(recv_data) if data == *recv_data),
         "Unexpected error {read_result:?}"
     );
 }
 
-#[test]
-fn download_local_non_aligned_file() {
+#[tokio::test(flavor = "current_thread")]
+async fn download_local_non_aligned_file() {
     let source_ip = "127.0.0.11";
     let server_dir = mk_tmp(download_local_non_aligned_file);
     let payload_size = 4096 + 256;
@@ -671,14 +696,14 @@ fn download_local_non_aligned_file() {
     let file_name = "file.txt";
     let file = server_dir.join(source_ip).join(file_name);
     _write_file(&file, &data);
-    let server = _ThreadedTFTPServer::new(server_dir, "127.0.0.10", 30);
-    let client = server.open_paired_client(source_ip);
-    let read_data = _download(client, file_name).unwrap();
+    let server = _ThreadedTFTPServer::new(server_dir, "127.0.0.10", 30).await;
+    let client = server.open_paired_client(source_ip).await;
+    let read_data = _download(client, file_name).await.unwrap();
     assert_eq!(read_data, data);
 }
 
-#[test]
-fn download_file_with_root_prefix() {
+#[tokio::test(flavor = "current_thread")]
+async fn download_file_with_root_prefix() {
     let source_ip = "127.0.0.11";
     let server_dir = mk_tmp(download_file_with_root_prefix);
     let payload_size = 512;
@@ -688,47 +713,53 @@ fn download_file_with_root_prefix() {
     _write_file(&file, &data);
     // Leading slash is expected to be stripped.
     let file_name_with_leading_slash = format!("/{file_name}");
-    let server = _ThreadedTFTPServer::new(server_dir, "127.0.0.10", 30);
-    let client = server.open_paired_client(source_ip);
-    let read_data = _download(client, &file_name_with_leading_slash).unwrap();
+    let server = _ThreadedTFTPServer::new(server_dir, "127.0.0.10", 30).await;
+    let client = server.open_paired_client(source_ip).await;
+    let read_data = _download(client, &file_name_with_leading_slash)
+        .await
+        .unwrap();
     assert_eq!(read_data, data);
 }
 
-#[test]
-fn attempt_download_nonexisting_file() {
+#[tokio::test(flavor = "current_thread")]
+async fn attempt_download_nonexisting_file() {
     let arbitrary_source_ip = "127.0.0.11";
     let server_dir = mk_tmp(attempt_download_nonexisting_file);
     let nonexisting_file_name = "nonexisting.file";
-    let server = _ThreadedTFTPServer::new(server_dir, "127.0.0.10", 30);
-    let client = server.open_paired_client(arbitrary_source_ip);
+    let server = _ThreadedTFTPServer::new(server_dir, "127.0.0.10", 30).await;
+    let client = server.open_paired_client(arbitrary_source_ip).await;
     let sent_request = client
         .send_plain_read_request(nonexisting_file_name)
+        .await
         .unwrap();
-    let result = sent_request.read_next(5);
+    let result = sent_request.read_next(5).await;
     assert!(
         matches!(&result, Err(_Error::ClientError(0x01, msg)) if msg == "File not found"),
         "Unexpected error {result:?}"
     );
 }
 
-#[test]
-fn access_violation() {
+#[tokio::test(flavor = "current_thread")]
+async fn access_violation() {
     let server_dir = mk_tmp(access_violation);
     set_permissions(&server_dir, Permissions::from_mode(0o055)).unwrap();
     let arbitrary_source_ip = "127.0.0.11";
     let arbitrary_file_name = "arbitrary.file";
-    let server = _ThreadedTFTPServer::new(server_dir, "127.0.0.10", 30);
-    let client = server.open_paired_client(arbitrary_source_ip);
-    let sent_request = client.send_plain_read_request(arbitrary_file_name).unwrap();
-    let result = sent_request.read_next(5);
+    let server = _ThreadedTFTPServer::new(server_dir, "127.0.0.10", 30).await;
+    let client = server.open_paired_client(arbitrary_source_ip).await;
+    let sent_request = client
+        .send_plain_read_request(arbitrary_file_name)
+        .await
+        .unwrap();
+    let result = sent_request.read_next(5).await;
     assert!(
         matches!(&result, Err(_Error::ClientError(0x02, msg)) if msg == "Access violation"),
         "Unexpected result {result:?}"
     );
 }
 
-#[test]
-fn early_terminate() {
+#[tokio::test(flavor = "current_thread")]
+async fn early_terminate() {
     let source_ip = "127.0.0.11";
     let server_dir = mk_tmp(early_terminate);
     let payload_size = 4096;
@@ -736,20 +767,23 @@ fn early_terminate() {
     let file_name = "file.txt";
     let file = server_dir.join(source_ip).join(file_name);
     _write_file(&file, &data);
-    let server = _ThreadedTFTPServer::new(server_dir, "127.0.0.10", 30);
-    let client = server.open_paired_client(source_ip);
-    let sent_request = client.send_plain_read_request(file_name).unwrap();
-    let first_block = sent_request.read_next(5).unwrap();
-    let mut sent_error = first_block.send_error(0x0, "Early termination").unwrap();
-    let some = sent_error.read_some(5);
+    let server = _ThreadedTFTPServer::new(server_dir, "127.0.0.10", 30).await;
+    let client = server.open_paired_client(source_ip).await;
+    let sent_request = client.send_plain_read_request(file_name).await.unwrap();
+    let first_block = sent_request.read_next(5).await.unwrap();
+    let mut sent_error = first_block
+        .send_error(0x0, "Early termination")
+        .await
+        .unwrap();
+    let some = sent_error.read_some(5).await;
     assert!(
         matches!(&some, Err(error) if error.kind() == ErrorKind::TimedOut),
         "Unexpected result {some:?}"
     );
 }
 
-#[test]
-fn change_block_size_local() {
+#[tokio::test(flavor = "current_thread")]
+async fn change_block_size_local() {
     let source_ip = "127.0.0.11";
     let server_dir = mk_tmp(change_block_size_local);
     let payload_size = 4096;
@@ -757,24 +791,28 @@ fn change_block_size_local() {
     let file_name = "file.txt";
     let file = server_dir.join(source_ip).join(file_name);
     _write_file(&file, &data);
-    let server = _ThreadedTFTPServer::new(server_dir, "127.0.0.10", 30);
-    let client = server.open_paired_client(source_ip);
+    let server = _ThreadedTFTPServer::new(server_dir, "127.0.0.10", 30).await;
+    let client = server.open_paired_client(source_ip).await;
     let arbitrary_block_size: usize = 1001;
     let send_options = HashMap::from([("blksize".to_string(), arbitrary_block_size.to_string())]);
     let sent_request = client
         .send_optioned_read_request(file_name, &send_options)
+        .await
         .unwrap();
-    let oack = sent_request.read_oack(5).unwrap();
+    let oack = sent_request.read_oack(5).await.unwrap();
     let received_options = oack.fields();
     assert_eq!(received_options, send_options);
-    let sent_ack = oack.acknowledge().unwrap();
-    let first_block = sent_ack.read_next(5).unwrap();
+    let sent_ack = oack.acknowledge().await.unwrap();
+    let first_block = sent_ack.read_next(5).await.unwrap();
     assert_eq!(first_block.data().len(), arbitrary_block_size);
-    first_block.send_error(0x0, "Early termination").unwrap();
+    first_block
+        .send_error(0x0, "Early termination")
+        .await
+        .unwrap();
 }
 
-#[test]
-fn request_file_size_local() {
+#[tokio::test(flavor = "current_thread")]
+async fn request_file_size_local() {
     let source_ip = "127.0.0.11";
     let server_dir = mk_tmp(request_file_size_local);
     let payload_size: usize = 4096;
@@ -782,23 +820,27 @@ fn request_file_size_local() {
     let file_name = "file.txt";
     let file = server_dir.join(source_ip).join(file_name);
     _write_file(&file, &data);
-    let server = _ThreadedTFTPServer::new(server_dir, "127.0.0.10", 30);
-    let client = server.open_paired_client(source_ip);
+    let server = _ThreadedTFTPServer::new(server_dir, "127.0.0.10", 30).await;
+    let client = server.open_paired_client(source_ip).await;
     let send_options = HashMap::from([("tsize".to_string(), "0".to_string())]);
     let sent_request = client
         .send_optioned_read_request(file_name, &send_options)
+        .await
         .unwrap();
-    let oack = sent_request.read_oack(5).unwrap();
+    let oack = sent_request.read_oack(5).await.unwrap();
     let received_options = oack.fields();
     let raw_file_size = received_options.get("tsize").unwrap();
     assert_eq!(raw_file_size.parse::<usize>().unwrap(), payload_size);
-    let sent_ack = oack.acknowledge().unwrap();
-    let first_block = sent_ack.read_next(5).unwrap();
-    first_block.send_error(0x0, "Early termination").unwrap();
+    let sent_ack = oack.acknowledge().await.unwrap();
+    let first_block = sent_ack.read_next(5).await.unwrap();
+    first_block
+        .send_error(0x0, "Early termination")
+        .await
+        .unwrap();
 }
 
-#[test]
-fn change_timeout() {
+#[tokio::test(flavor = "current_thread")]
+async fn change_timeout() {
     let source_ip = "127.0.0.11";
     let server_dir = mk_tmp(change_timeout);
     let payload_size = 4096;
@@ -806,14 +848,15 @@ fn change_timeout() {
     let file_name = "file.txt";
     let file = server_dir.join(source_ip).join(file_name);
     _write_file(&file, &data);
-    let server = _ThreadedTFTPServer::new(server_dir, "127.0.0.10", 30);
-    let client = server.open_paired_client(source_ip);
+    let server = _ThreadedTFTPServer::new(server_dir, "127.0.0.10", 30).await;
+    let client = server.open_paired_client(source_ip).await;
     let minimal_timeout = 1;
     let send_options = HashMap::from([("timeout".to_string(), minimal_timeout.to_string())]);
     let sent_request = client
         .send_optioned_read_request(file_name, &send_options)
+        .await
         .unwrap();
-    let oack = sent_request.read_oack(5).unwrap();
+    let oack = sent_request.read_oack(5).await.unwrap();
     let received_options = oack.fields();
     let start = time::Instant::now();
     assert_eq!(received_options, send_options);
@@ -825,14 +868,11 @@ fn change_timeout() {
         (Vec::new(), 0u64),
         (Vec::new(), 0u64),
     ];
-    let local_read_timeout_sec = 2;
-    oack.datagram_stream
-        .local_socket
-        .set_read_timeout(Some(Duration::from_secs(local_read_timeout_sec)))
-        .unwrap();
+    let local_read_timeout = Duration::from_secs(2);
     let mut buffer = [0u8; _BUFFER_SIZE];
     for (retry_message, timestamp) in &mut retry_buffers {
-        if let Ok(read_bytes) = oack.datagram_stream.local_socket.recv(&mut buffer) {
+        let read_future = oack.datagram_stream.local_socket.recv(&mut buffer);
+        if let Ok(Ok(read_bytes)) = tokio::time::timeout(local_read_timeout, read_future).await {
             (*retry_message).extend_from_slice(&buffer[..read_bytes]);
             *timestamp = time::Instant::now().duration_since(start).as_secs();
             eprintln!(
@@ -893,8 +933,8 @@ fn change_timeout() {
     );
 }
 
-#[test]
-fn test_download_nbd_file_aligned() {
+#[tokio::test(flavor = "current_thread")]
+async fn test_download_nbd_file_aligned() {
     let source_ip = "127.0.0.11";
     let server_dir = mk_tmp(test_download_nbd_file_aligned);
     let nbd_process = run_nbd_server("127.0.0.2");
@@ -914,16 +954,16 @@ fn test_download_nbd_file_aligned() {
     });
     let nbd_share_config_file = server_dir.join(format!("{}.nbd", source_ip));
     _write_file(&nbd_share_config_file, config.to_string().as_bytes());
-    let server = _ThreadedTFTPServer::new(server_dir, "127.0.0.10", 30);
-    let client = server.open_paired_client(source_ip);
+    let server = _ThreadedTFTPServer::new(server_dir, "127.0.0.10", 30).await;
+    let client = server.open_paired_client(source_ip).await;
     let existing_file = "aligned.file";
-    let read_data = _download(client, existing_file).unwrap();
+    let read_data = _download(client, existing_file).await.unwrap();
     let data = make_payload(4194304);
     assert_eq!(read_data, data);
 }
 
-#[test]
-fn test_download_nbd_file_nonaligned() {
+#[tokio::test(flavor = "current_thread")]
+async fn test_download_nbd_file_nonaligned() {
     let source_ip = "127.0.0.11";
     let server_dir = mk_tmp(test_download_nbd_file_nonaligned);
     let nbd_process = run_nbd_server("127.0.0.2");
@@ -943,16 +983,16 @@ fn test_download_nbd_file_nonaligned() {
     });
     let nbd_share_config_file = server_dir.join(format!("{}.nbd", source_ip));
     _write_file(&nbd_share_config_file, config.to_string().as_bytes());
-    let server = _ThreadedTFTPServer::new(server_dir, "127.0.0.10", 30);
-    let client = server.open_paired_client(source_ip);
+    let server = _ThreadedTFTPServer::new(server_dir, "127.0.0.10", 30).await;
+    let client = server.open_paired_client(source_ip).await;
     let existing_file = "nonaligned.file";
-    let read_data = _download(client, existing_file).unwrap();
+    let read_data = _download(client, existing_file).await.unwrap();
     let data = make_payload(4194319);
     assert_eq!(read_data, data);
 }
 
-#[test]
-fn request_file_size_remote() {
+#[tokio::test(flavor = "current_thread")]
+async fn request_file_size_remote() {
     let source_ip = "127.0.0.11";
     let server_dir = mk_tmp(request_file_size_remote);
     let nbd_process = run_nbd_server("127.0.0.2");
@@ -972,25 +1012,29 @@ fn request_file_size_remote() {
     });
     let nbd_share_config_file = server_dir.join(format!("{}.nbd", source_ip));
     _write_file(&nbd_share_config_file, config.to_string().as_bytes());
-    let server = _ThreadedTFTPServer::new(server_dir, "127.0.0.10", 30);
-    let client = server.open_paired_client(source_ip);
+    let server = _ThreadedTFTPServer::new(server_dir, "127.0.0.10", 30).await;
+    let client = server.open_paired_client(source_ip).await;
     let existing_file_name = "nonaligned.file";
     let existing_file_size: usize = 4194319;
     let send_options = HashMap::from([("tsize".to_string(), "0".to_string())]);
     let sent_request = client
         .send_optioned_read_request(existing_file_name, &send_options)
+        .await
         .unwrap();
-    let oack = sent_request.read_oack(5).unwrap();
+    let oack = sent_request.read_oack(5).await.unwrap();
     let received_options = oack.fields();
     let raw_file_size = received_options.get("tsize").unwrap();
     assert_eq!(raw_file_size.parse::<usize>().unwrap(), existing_file_size);
-    let sent_ack = oack.acknowledge().unwrap();
-    let first_block = sent_ack.read_next(5).unwrap();
-    first_block.send_error(0x0, "Early termination").unwrap();
+    let sent_ack = oack.acknowledge().await.unwrap();
+    let first_block = sent_ack.read_next(5).await.unwrap();
+    first_block
+        .send_error(0x0, "Early termination")
+        .await
+        .unwrap();
 }
 
-#[test]
-fn change_block_size_remote() {
+#[tokio::test(flavor = "current_thread")]
+async fn change_block_size_remote() {
     let source_ip = "127.0.0.11";
     let server_dir = mk_tmp(change_block_size_remote);
     let nbd_process = run_nbd_server("127.0.0.2");
@@ -1011,24 +1055,28 @@ fn change_block_size_remote() {
     let nbd_share_config_file = server_dir.join(format!("{}.nbd", source_ip));
     _write_file(&nbd_share_config_file, config.to_string().as_bytes());
     let existing_file_name = "nonaligned.file";
-    let server = _ThreadedTFTPServer::new(server_dir, "127.0.0.10", 30);
-    let client = server.open_paired_client(source_ip);
+    let server = _ThreadedTFTPServer::new(server_dir, "127.0.0.10", 30).await;
+    let client = server.open_paired_client(source_ip).await;
     let arbitrary_block_size: usize = 1001;
     let send_options = HashMap::from([("blksize".to_string(), arbitrary_block_size.to_string())]);
     let sent_request = client
         .send_optioned_read_request(existing_file_name, &send_options)
+        .await
         .unwrap();
-    let oack = sent_request.read_oack(5).unwrap();
+    let oack = sent_request.read_oack(5).await.unwrap();
     let received_options = oack.fields();
     assert_eq!(received_options, send_options);
-    let sent_ack = oack.acknowledge().unwrap();
-    let first_block = sent_ack.read_next(5).unwrap();
+    let sent_ack = oack.acknowledge().await.unwrap();
+    let first_block = sent_ack.read_next(5).await.unwrap();
     assert_eq!(first_block.data().len(), arbitrary_block_size);
-    first_block.send_error(0x0, "Early termination").unwrap();
+    first_block
+        .send_error(0x0, "Early termination")
+        .await
+        .unwrap();
 }
 
-#[test]
-fn test_local_file_takes_precedence() {
+#[tokio::test(flavor = "current_thread")]
+async fn test_local_file_takes_precedence() {
     let source_ip = "127.0.0.11";
     let server_dir = mk_tmp(test_local_file_takes_precedence);
     let nbd_process = run_nbd_server("127.0.0.2");
@@ -1058,14 +1106,14 @@ fn test_local_file_takes_precedence() {
     let existing_file = "aligned.file";
     let local_file = server_dir.join(source_ip).join(existing_file);
     _write_file(&local_file, &local_payload);
-    let server = _ThreadedTFTPServer::new(server_dir, "127.0.0.10", 30);
-    let client = server.open_paired_client(source_ip);
-    let read_data = _download(client, existing_file).unwrap();
+    let server = _ThreadedTFTPServer::new(server_dir, "127.0.0.10", 30).await;
+    let client = server.open_paired_client(source_ip).await;
+    let read_data = _download(client, existing_file).await.unwrap();
     assert_eq!(read_data, local_payload);
 }
 
-#[test]
-fn test_file_not_exists_in_both_local_remote() {
+#[tokio::test(flavor = "current_thread")]
+async fn test_file_not_exists_in_both_local_remote() {
     let source_ip = "127.0.0.11";
     let server_dir = mk_tmp(test_file_not_exists_in_both_local_remote);
     let nbd_process = run_nbd_server("127.0.0.2");
@@ -1086,9 +1134,9 @@ fn test_file_not_exists_in_both_local_remote() {
     let nbd_share_config_file = server_dir.join(format!("{}.nbd", source_ip));
     _write_file(&nbd_share_config_file, config.to_string().as_bytes());
     let nonexisting_file = "nonexisted.file";
-    let server = _ThreadedTFTPServer::new(server_dir, "127.0.0.10", 30);
-    let client = server.open_paired_client(source_ip);
-    let read_result = _download(client, nonexisting_file);
+    let server = _ThreadedTFTPServer::new(server_dir, "127.0.0.10", 30).await;
+    let client = server.open_paired_client(source_ip).await;
+    let read_result = _download(client, nonexisting_file).await;
     assert!(
         matches!(&read_result, Err(message) if message.to_string().contains("File not found")),
         "Unexpected error {read_result:?}"
