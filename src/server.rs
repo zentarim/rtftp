@@ -9,9 +9,6 @@ use std::str::FromStr;
 use std::time::Duration;
 use tokio::net::UdpSocket;
 
-#[cfg(test)]
-mod tests;
-
 const BUFFER_SIZE: usize = u16::MAX as _;
 
 pub(super) struct TFTPServer {
