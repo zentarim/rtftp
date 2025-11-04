@@ -81,9 +81,12 @@ In this example:
 
 ### Notes:
 
+- Only Read Request (RRQ) is supported.
 - If a file exists in both the local directory and the NBD-based filesystem, the **local file takes precedence**.
-- The NBD disk is connected lazily on the first read request.
 - Initial setup of the virtual NBD filesystem takes **1.5 to 3 seconds**, so the first request usually need to be retried automatically by the client.
+- The NBD disk is either:
+  - Connected proactively when config is created to avoid the first read request delay.
+  - Connected lazily on the first read request.
 - An inactive NBD disk is automatically disconnected after a period of inactivity. This timeout is configurable via the `idle_timeout` daemon argument.
 - Supported TFTP options:
     - timeout 
