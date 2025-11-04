@@ -5,7 +5,7 @@ use std::io;
 use std::io::{ErrorKind, Read, Seek, SeekFrom};
 use std::path::PathBuf;
 
-pub(super) struct LocalOpenedFile {
+struct LocalOpenedFile {
     rd: File,
     display: String,
 }
@@ -90,10 +90,23 @@ impl Display for LocalRoot {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::_tests::mk_tmp;
-    use std::fs::{Permissions, set_permissions};
+    use std::any::type_name;
+    use std::env;
+    use std::fs::{Permissions, create_dir, set_permissions};
     use std::os::unix::fs::PermissionsExt;
     use std::path::PathBuf;
+
+    fn get_fn_name<T>(_: T) -> &'static str {
+        type_name::<T>()
+    }
+
+    pub(super) fn mk_tmp<T>(test_func: T) -> PathBuf {
+        let test_dir_name = get_fn_name(test_func).replace("::", "_");
+        let pid = std::process::id();
+        let test_tmp_dir = env::temp_dir().join(format!("rtftp_{pid}_{test_dir_name}"));
+        create_dir(&test_tmp_dir).unwrap();
+        test_tmp_dir
+    }
 
     #[test]
     fn open_non_existent() {
