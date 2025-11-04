@@ -28,20 +28,6 @@ pub(super) fn ensure_prerequisite_disk() {
     drop(lock);
 }
 
-fn _ensure_prerequisite_disk() {
-    if !get_test_qcow().exists() {
-        let script = get_test_data_dir().join("build_test_qcow_disk.sh");
-        let status = Command::new(&script)
-            .arg(get_test_qcow().as_path())
-            .arg(_DATA_PATTERN)
-            .status()
-            .expect(format!("{:?} failed", script).as_str());
-        if !status.success() {
-            panic!("{script:?} failed");
-        }
-    }
-}
-
 fn _create_prerequisite_disk() {
     let script = get_test_data_dir().join("build_test_qcow_disk.sh");
     let status = Command::new(&script)
