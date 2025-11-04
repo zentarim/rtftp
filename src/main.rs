@@ -1,5 +1,3 @@
-#[cfg(test)]
-mod _tests;
 mod cursor;
 mod fs;
 mod fs_watch;
