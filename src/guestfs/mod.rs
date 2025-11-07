@@ -215,9 +215,13 @@ impl GuestFS {
         }
     }
 
-    pub(super) fn add_qemu_option(&self, key: &str, value: &str) -> Result<(), GuestFSError> {
-        let c_str_key = CString::new(key).expect("CString::new failed");
-        let c_str_value = CString::new(value).expect("CString::new failed");
+    pub(super) fn add_qemu_option<S: AsRef<str>>(
+        &self,
+        key: S,
+        value: S,
+    ) -> Result<(), GuestFSError> {
+        let c_str_key = CString::new(key.as_ref()).expect("CString::new failed");
+        let c_str_value = CString::new(value.as_ref()).expect("CString::new failed");
         if unsafe { guestfs_config(self.handle, c_str_key.as_ptr(), c_str_value.as_ptr()) } == 0 {
             Ok(())
         } else {
@@ -262,9 +266,13 @@ impl GuestFS {
         Ok(partitions_list)
     }
 
-    pub(super) fn mount_ro(&self, device: &str, mountpoint: &str) -> Result<(), GuestFSError> {
-        let c_str_device = CString::new(device).expect("CString::new failed");
-        let c_str_mountpoint = CString::new(mountpoint).expect("CString::new failed");
+    pub(super) fn mount_ro<S: AsRef<str>>(
+        &self,
+        device: S,
+        mountpoint: S,
+    ) -> Result<(), GuestFSError> {
+        let c_str_device = CString::new(device.as_ref()).expect("CString::new failed");
+        let c_str_mountpoint = CString::new(mountpoint.as_ref()).expect("CString::new failed");
         if unsafe {
             guestfs_mount_ro(
                 self.handle,
@@ -279,8 +287,8 @@ impl GuestFS {
         }
     }
 
-    pub(super) fn get_size(&self, path: &str) -> Result<usize, GuestFSError> {
-        let c_str_path = CString::new(path).expect("CString::new failed");
+    pub(super) fn get_size<S: AsRef<str>>(&self, path: S) -> Result<usize, GuestFSError> {
+        let c_str_path = CString::new(path.as_ref()).expect("CString::new failed");
         let size = unsafe {
             let result = guestfs_stat(self.handle, c_str_path.as_ptr());
             if result.is_null() {
@@ -293,8 +301,8 @@ impl GuestFS {
         Ok(size as usize)
     }
 
-    pub(super) fn set_append(&self, string: &str) -> Result<(), GuestFSError> {
-        let c_str = CString::new(string).expect("CString::new failed");
+    pub(super) fn set_append<S: AsRef<str>>(&self, string: S) -> Result<(), GuestFSError> {
+        let c_str = CString::new(string.as_ref()).expect("CString::new failed");
         let result = unsafe { guestfs_set_append(self.handle, c_str.as_ptr()) };
         if result == 0 {
             Ok(())
@@ -303,8 +311,12 @@ impl GuestFS {
         }
     }
 
-    pub(super) fn read_chunk(&self, path: &str, offset: usize) -> Result<Vec<u8>, GuestFSError> {
-        let c_str_path = CString::new(path).expect("CString::new failed");
+    pub(super) fn read_chunk<S: AsRef<str>>(
+        &self,
+        path: S,
+        offset: usize,
+    ) -> Result<Vec<u8>, GuestFSError> {
+        let c_str_path = CString::new(path.as_ref()).expect("CString::new failed");
         unsafe {
             let mut size_r: libc::size_t = 0;
             let read_buffer = guestfs_pread(
