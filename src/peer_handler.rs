@@ -33,7 +33,7 @@ const ACCESS_VIOLATION: u16 = 0x02;
 
 const MAX_SESSIONS_PER_IP: usize = 128;
 
-pub struct TFTPStream {
+pub(super) struct TFTPStream {
     udp_stream: DatagramStream,
     ack_timeout: AckTimeout,
     send_attempts: usize,
