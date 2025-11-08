@@ -16,7 +16,7 @@ static BLKSIZE: &str = "blksize";
 
 const BLOCK_SIZE_LIMIT: usize = u16::MAX as usize;
 
-const ACK_TIMEOUT_LIMIT: usize = 60;
+const ACK_TIMEOUT_LIMIT: usize = 255;
 
 #[derive(Clone)]
 pub(super) struct Blksize {
@@ -86,11 +86,11 @@ impl AckTimeout {
         if let Some(timeout_string) = options.get(TIMEOUT)
             && let Ok(timeout) = timeout_string.parse::<usize>()
         {
-            if timeout <= ACK_TIMEOUT_LIMIT {
+            if (1..=ACK_TIMEOUT_LIMIT).contains(&timeout) {
                 return Some(Self { timeout });
             } else {
                 eprintln!(
-                    "Requested timeout {timeout} exceeds maximum allowed {ACK_TIMEOUT_LIMIT}"
+                    "Requested timeout {timeout} doesn't fit in range 1 .. ={ACK_TIMEOUT_LIMIT}"
                 );
             }
         }
