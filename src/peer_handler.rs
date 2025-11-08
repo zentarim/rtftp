@@ -58,7 +58,7 @@ impl DatagramStream {
         self.peer_address.port()
     }
 
-    pub async fn send(&self, buffer: &[u8]) -> std::io::Result<()> {
+    pub(super) async fn send(&self, buffer: &[u8]) -> std::io::Result<()> {
         match self.local_socket.send_to(buffer, self.peer_address).await {
             Ok(sent) => {
                 if sent != buffer.len() {
@@ -71,7 +71,7 @@ impl DatagramStream {
         }
     }
 
-    pub async fn recv(&self, buffer: &mut [u8], min_size: usize) -> std::io::Result<usize> {
+    pub(super) async fn recv(&self, buffer: &mut [u8], min_size: usize) -> std::io::Result<usize> {
         loop {
             match self.local_socket.recv_from(buffer).await {
                 Ok((recv_size, remote_address)) => {
