@@ -3,6 +3,7 @@ compile_error!(
     "This project does not support building on Windows due to its reliance on libguestfs and inotify."
 );
 mod cursor;
+mod datagram_stream;
 mod fs;
 mod fs_watch;
 mod guestfs;
