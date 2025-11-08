@@ -3,7 +3,7 @@ use super::*;
 #[test]
 fn find_block_size() {
     let mut options = HashMap::new();
-    options.insert("blksize".to_string(), "1468".to_string());
+    options.insert(BLKSIZE.to_string(), "1468".to_string());
     let blk_size = Blksize::find_in(&options).unwrap();
     assert_eq!(blk_size.block_size, 1468);
     assert_eq!(
@@ -15,7 +15,7 @@ fn find_block_size() {
 #[test]
 fn find_tsize() {
     let mut options = HashMap::new();
-    options.insert("tsize".to_string(), "0".to_string());
+    options.insert(TSIZE.to_string(), "0".to_string());
     assert!(TSize::is_requested(&options));
 }
 
@@ -23,7 +23,7 @@ fn find_tsize() {
 fn find_timeout() {
     let mut options = HashMap::new();
     let timeout_value: usize = 10;
-    options.insert("timeout".to_string(), timeout_value.to_string());
+    options.insert(TIMEOUT.to_string(), timeout_value.to_string());
     let timeout = AckTimeout::find_in(&options).unwrap();
     assert_eq!(timeout.timeout, timeout_value);
 }
@@ -31,7 +31,7 @@ fn find_timeout() {
 #[test]
 fn test_timeout_cap() {
     let mut options = HashMap::new();
-    options.insert("timeout".to_string(), (ACK_TIMEOUT_LIMIT + 1).to_string());
+    options.insert(TIMEOUT.to_string(), (ACK_TIMEOUT_LIMIT + 1).to_string());
     let find_result = AckTimeout::find_in(&options);
     assert!(find_result.is_none());
 }
@@ -39,7 +39,7 @@ fn test_timeout_cap() {
 #[test]
 fn test_block_size_cap() {
     let mut options = HashMap::new();
-    options.insert("blksize".to_string(), (BLOCK_SIZE_LIMIT + 1).to_string());
+    options.insert(BLKSIZE.to_string(), (BLOCK_SIZE_LIMIT + 1).to_string());
     let find_result = Blksize::find_in(&options);
     assert!(find_result.is_none());
 }
