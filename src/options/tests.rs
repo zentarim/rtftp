@@ -37,6 +37,14 @@ fn test_timeout_cap() {
 }
 
 #[test]
+fn test_timeout_bottom() {
+    let mut options = HashMap::new();
+    options.insert(TIMEOUT.to_string(), 0.to_string());
+    let find_result = AckTimeout::find_in(&options);
+    assert!(find_result.is_none());
+}
+
+#[test]
 fn test_block_size_cap() {
     let mut options = HashMap::new();
     options.insert(BLKSIZE.to_string(), (BLOCK_SIZE_LIMIT + 1).to_string());
