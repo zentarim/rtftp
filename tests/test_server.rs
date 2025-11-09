@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use std::{fs, time};
 use tokio::net::UdpSocket;
 
-use crate::common::client::{TFTPClientError, download};
+use crate::common::client::{TFTPClientError, download, download_window};
 
 mod common;
 
@@ -600,4 +600,84 @@ async fn test_download_nbd_file_nonaligned_augmented() {
     let read_data = download(client, existing_file).await.unwrap();
     let data = make_payload(4194319);
     assert_eq!(read_data, data);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn download_local_aligned_file_window() {
+    let source_ip = "127.0.0.11";
+    let server_dir = mk_tmp(download_local_aligned_file_window);
+    let payload_size = 4096;
+    let data = make_payload(payload_size);
+    let file_name = "file.txt";
+    let file = server_dir.join(source_ip).join(file_name);
+    _write_file(&file, &data);
+    let running_server = start_rtftp(server_dir).await;
+    let client = running_server.open_paired_client(source_ip).await;
+    let read_data = download_window(client, file_name, 5).await.unwrap();
+    assert_eq!(read_data, data);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn download_local_unaligned_file_window() {
+    let source_ip = "127.0.0.11";
+    let server_dir = mk_tmp(download_local_unaligned_file_window);
+    let payload_size = 4096;
+    let data = make_payload(payload_size);
+    let file_name = "file.txt";
+    let file = server_dir.join(source_ip).join(file_name);
+    _write_file(&file, &data);
+    let running_server = start_rtftp(server_dir).await;
+    let client = running_server.open_paired_client(source_ip).await;
+    let read_data = download_window(client, file_name, 5).await.unwrap();
+    assert_eq!(read_data, data);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn file_window_partial_ack() {
+    let source_ip = "127.0.0.11";
+    let server_dir = mk_tmp(file_window_partial_ack);
+    let payload_size = 4096;
+    let data = make_payload(payload_size);
+    let file_name = "file.txt";
+    let file = server_dir.join(source_ip).join(file_name);
+    _write_file(&file, &data);
+    let running_server = start_rtftp(server_dir).await;
+    let client = running_server.open_paired_client(source_ip).await;
+    let block_size = 100;
+    let send_options = HashMap::from([
+        ("windowsize".to_string(), 3.to_string()),
+        ("timeout".to_string(), 1.to_string()),
+        ("blksize".to_string(), block_size.to_string()),
+    ]);
+    let sent_request = client
+        .send_optioned_read_request(file_name, &send_options)
+        .await
+        .unwrap();
+    let oack = sent_request.read_oack(5).await.unwrap();
+    let sent_ack = oack.acknowledge().await.unwrap();
+    let first_block = sent_ack.read_next(2).await.unwrap();
+    assert_eq!(first_block.data(), data[..block_size].to_vec());
+    let second_block = first_block.read_next(2).await.unwrap();
+    assert_eq!(
+        second_block.data(),
+        data[block_size..block_size * 2].to_vec()
+    );
+    let third_block = second_block.read_next(2).await.unwrap();
+    assert_eq!(
+        third_block.data(),
+        data[block_size * 2..block_size * 3].to_vec()
+    );
+    let first_block_acknowledge = b"\x00\x04\x00\x01";
+    let datagram_stream = third_block.datagram_stream;
+    datagram_stream.send(first_block_acknowledge).await.unwrap();
+    let mut buffer = [0u8; _BUFFER_SIZE];
+    datagram_stream.recv(&mut buffer, 2, 0).await.unwrap();
+    let second_block_num = u16::from_be_bytes(buffer[2..4].try_into().unwrap());
+    assert_eq!(second_block_num, 2);
+    datagram_stream.recv(&mut buffer, 2, 0).await.unwrap();
+    let third_block_num = u16::from_be_bytes(buffer[2..4].try_into().unwrap());
+    assert_eq!(third_block_num, 3);
+    datagram_stream.recv(&mut buffer, 2, 0).await.unwrap();
+    let forth_block_num = u16::from_be_bytes(buffer[2..4].try_into().unwrap());
+    assert_eq!(forth_block_num, 4);
 }

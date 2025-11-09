@@ -102,6 +102,7 @@ In this example:
     - timeout 
     - blksize
     - tsize
+    - windowsize
 - The daemon is intended to run without root privileges. To allow RTFTP to bind to UDP port 69, one of following workarounds may be applied:
     - Add **CAP_NET_BIND_SERVICE** capability to RTFTP: `setcap 'cap_net_bind_service=+ep' /path/to/rtftp`
     - Start RTFTP via `authbind` with port 69 allowed for the RTFTP user: `touch /etc/authbind/byport/69 && chown <rtftp_user>:<rtftp_group> /etc/authbind/byport/69`

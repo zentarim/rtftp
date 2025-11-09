@@ -59,3 +59,27 @@ fn test_block_size_cap() {
     let find_result = Blksize::find_in(&options);
     assert!(find_result.is_none());
 }
+
+#[test]
+fn test_window_size() {
+    let mut options = HashMap::new();
+    options.insert(WINDOW_SIZE.to_string(), 10.to_string());
+    let find_result = WindowSize::find_in(&options);
+    assert!(find_result.is_some());
+}
+
+#[test]
+fn test_window_bottom() {
+    let mut options = HashMap::new();
+    options.insert(WINDOW_SIZE.to_string(), 0.to_string());
+    let find_result = WindowSize::find_in(&options);
+    assert!(find_result.is_none());
+}
+
+#[test]
+fn test_window_cap() {
+    let mut options = HashMap::new();
+    options.insert(WINDOW_SIZE.to_string(), (WINDOW_SIZE_LIMIT + 1).to_string());
+    let find_result = WindowSize::find_in(&options);
+    assert!(find_result.is_none());
+}
