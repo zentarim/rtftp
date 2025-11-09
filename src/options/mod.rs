@@ -14,9 +14,13 @@ static TIMEOUT: &str = "timeout";
 
 static BLKSIZE: &str = "blksize";
 
+const WINDOW_SIZE: &str = "windowsize";
+
 const BLOCK_SIZE_LIMIT: usize = u16::MAX as usize;
 
 const ACK_TIMEOUT_LIMIT: usize = 255;
+
+const WINDOW_SIZE_LIMIT: usize = u16::MAX as usize;
 
 #[derive(Clone)]
 pub(super) struct Blksize {
@@ -41,16 +45,8 @@ impl Blksize {
         (String::from(BLKSIZE), self.block_size.to_string())
     }
 
-    pub(super) fn is_last(&self, chunk_size: usize) -> bool {
-        chunk_size < self.block_size
-    }
-
-    pub(super) fn read_chunk(
-        &self,
-        opened_file: &mut dyn OpenedFile,
-        buffer: &mut [u8],
-    ) -> Result<usize, FileError> {
-        opened_file.read_to(&mut buffer[..self.block_size])
+    pub(super) fn get_size(&self) -> usize {
+        self.block_size
     }
 }
 
@@ -121,5 +117,43 @@ impl TSize {
 
     pub(super) fn as_key_pair(&self) -> (String, String) {
         (String::from(TSIZE), self.file_size.to_string())
+    }
+}
+
+pub(super) struct WindowSize(usize);
+
+impl Display for WindowSize {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "[blocks_count: {}]", self.0)
+    }
+}
+
+impl WindowSize {
+    pub(super) fn find_in(options: &HashMap<String, String>) -> Option<Self> {
+        if let Some(window_size) = options.get(WINDOW_SIZE)
+            && let Ok(window_size) = window_size.parse::<usize>()
+        {
+            if (1..=WINDOW_SIZE_LIMIT).contains(&window_size) {
+                return Some(Self(window_size));
+            } else {
+                eprintln!(
+                    "Requested window size {window_size} doesn't fit in range 1 .. ={WINDOW_SIZE_LIMIT}"
+                );
+            }
+        }
+        None
+    }
+
+    pub(super) fn get_size(&self) -> usize {
+        self.0
+    }
+    pub(super) fn as_key_pair(&self) -> (String, String) {
+        (String::from(WINDOW_SIZE), self.0.to_string())
+    }
+}
+
+impl Default for WindowSize {
+    fn default() -> Self {
+        Self(1)
     }
 }

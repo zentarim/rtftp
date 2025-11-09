@@ -14,6 +14,8 @@ const _ACK: u16 = 0x04;
 const _ERR: u16 = 0x05;
 const _OACK: u16 = 0x06;
 
+const _WINDOW_SIZE: &str = "windowsize";
+
 #[derive(Debug)]
 struct _SendError<T> {
     message: String,
@@ -163,7 +165,7 @@ impl DatagramStream {
         }
     }
 
-    async fn send(&self, buffer: &[u8]) -> io::Result<()> {
+    pub(crate) async fn send(&self, buffer: &[u8]) -> io::Result<()> {
         match self.local_socket.send_to(buffer, self.peer_address).await {
             Ok(sent) => {
                 if sent != buffer.len() {
@@ -386,7 +388,7 @@ impl OACK {
 }
 
 pub(crate) struct Block {
-    datagram_stream: DatagramStream,
+    pub(crate) datagram_stream: DatagramStream,
     read_buffer: [u8; _BUFFER_SIZE],
     write_buffer: [u8; _BUFFER_SIZE],
     read_bytes: usize,
@@ -438,6 +440,41 @@ impl Block {
             write_buffer: self.write_buffer,
             write_bytes: buffer_size,
         })
+    }
+    pub(crate) async fn read_next(
+        mut self,
+        read_timeout: usize,
+    ) -> Result<Block, TFTPClientError<Self>> {
+        let duration = time::Duration::from_secs(read_timeout as u64);
+        let read_future = self
+            .datagram_stream
+            .recv(&mut self.read_buffer, read_timeout, 4);
+        match tokio::time::timeout(duration, read_future).await {
+            Ok(Ok(read_bytes)) => {
+                let mut read_cursor = ReadCursor::new(&mut self.read_buffer[..read_bytes]);
+                match read_cursor.extract_ushort() {
+                    Ok(code) if code == _DATA => Ok(Block {
+                        datagram_stream: self.datagram_stream,
+                        read_buffer: self.read_buffer,
+                        write_buffer: self.write_buffer,
+                        read_bytes,
+                    }),
+                    Ok(code) if code == _ERR => {
+                        let error_code = read_cursor.extract_ushort().unwrap();
+                        let message = read_cursor.extract_string().unwrap();
+                        Err(TFTPClientError::ClientError(error_code, message))
+                    }
+                    Ok(_code) => Err(TFTPClientError::UnexpectedData(
+                        self.read_buffer[..read_bytes].to_vec(),
+                    )),
+                    Err(parse_error) => {
+                        Err(TFTPClientError::ParseError(format!("{parse_error:?}")))
+                    }
+                }
+            }
+            Ok(Err(err)) => Err(TFTPClientError::IO(err)),
+            Err(_timeout_error) => Err(TFTPClientError::Timeout(self)),
+        }
     }
 }
 
@@ -559,6 +596,65 @@ pub(crate) async fn download(client: TFTPClient, file: &str) -> Result<Vec<u8>, 
                     .map_err(|error| DownloadError::from(error))?,
             );
         }
+    }
+    Ok(read_data)
+}
+
+pub(crate) async fn download_window(
+    client: TFTPClient,
+    file: &str,
+    window_size: u16,
+) -> Result<Vec<u8>, DownloadError> {
+    let default_timeout: usize = 5;
+    let default_block_size: usize = 512;
+    let mut read_data: Vec<u8> = Vec::new();
+    let options = HashMap::from([(_WINDOW_SIZE.to_string(), window_size.to_string())]);
+    let sent_request = client
+        .send_optioned_read_request(file, &options)
+        .await
+        .map_err(|error| DownloadError::from(error))?;
+    let oack = sent_request
+        .read_oack(default_timeout)
+        .await
+        .map_err(|error| DownloadError::from(error))?;
+    if let Some(window_size_received) = oack.fields().get(_WINDOW_SIZE) {
+        if let Ok(window_size_received) = window_size_received.parse::<u16>() {
+            if window_size_received != window_size {
+                return Err(DownloadError(format!(
+                    "Window size mismatch: Received {}, expected {}",
+                    window_size_received, window_size
+                )));
+            }
+        } else {
+            return Err(DownloadError(format!(
+                "Window size not recognized: {}",
+                window_size_received
+            )));
+        }
+    } else {
+        return Err(DownloadError("Window size not set".into()));
+    }
+    let mut sent_ack: Option<SentACK> = Some(oack.acknowledge().await?);
+    let mut last_block: Option<Block> = None;
+    let mut done = false;
+    while !done {
+        for _ in 0..(window_size) {
+            let received_block = {
+                if let Some(last_block) = last_block.take() {
+                    last_block.read_next(default_timeout).await?
+                } else {
+                    sent_ack.take().unwrap().read_next(default_timeout).await?
+                }
+            };
+            let recv_block_len = received_block.data().len();
+            read_data.extend(received_block.data());
+            last_block = Some(received_block);
+            done = recv_block_len < default_block_size;
+            if done {
+                break;
+            }
+        }
+        sent_ack = Some(last_block.take().unwrap().acknowledge().await?);
     }
     Ok(read_data)
 }

@@ -1,10 +1,10 @@
-use crate::cursor::{ReadCursor, WriteCursor};
+use crate::cursor::{BufferError, ReadCursor};
 use crate::datagram_stream::DatagramStream;
 use crate::fs::{FileError, OpenedFile, Root};
 use crate::local_fs::LocalRoot;
 use crate::messages::{OptionsAcknowledge, ReadRequest, TFTPError, UNDEFINED_ERROR};
 use crate::nbd_disk::NBDConfig;
-use crate::options::{AckTimeout, Blksize, TSize};
+use crate::options::{AckTimeout, Blksize, TSize, WindowSize};
 use crate::remote_fs::{Config, VirtualRootError};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -22,6 +22,9 @@ use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::task::{JoinHandle, LocalSet};
 use tokio::time::timeout;
 
+#[cfg(test)]
+mod tests;
+
 const ACK: u16 = 0x04;
 const DATA: u16 = 0x03;
 
@@ -33,6 +36,7 @@ const ACCESS_VIOLATION: u16 = 0x02;
 
 const MAX_SESSIONS_PER_IP: usize = 128;
 
+const SEND_ATTEMPTS: u16 = 5;
 
 async fn fire_error(error: TFTPError, datagram_stream: &DatagramStream, buffer: &mut [u8]) {
     match error.serialize(buffer) {
@@ -49,100 +53,168 @@ async fn fire_error(error: TFTPError, datagram_stream: &DatagramStream, buffer: 
     }
 }
 
-
-pub(super) struct TFTPStream {
-    udp_stream: DatagramStream,
-    ack_timeout: AckTimeout,
-    send_attempts: usize,
-    recv_buffer: Vec<u8>,
+struct Window {
+    block_size: u16,
+    buffers: Vec<Vec<u8>>,
 }
 
-impl TFTPStream {
-    fn new(udp_stream: DatagramStream, ack_timeout: AckTimeout, send_attempts: usize) -> Self {
+impl Window {
+    fn new(block_size: u16, window_size: u16) -> Self {
         Self {
-            udp_stream,
-            ack_timeout,
-            send_attempts,
-            recv_buffer: vec![0u8; u16::MAX as usize],
+            block_size,
+            buffers: (0..window_size)
+                .map(|_| vec![0; block_size as usize + 2 * size_of::<u16>()])
+                .collect(),
         }
     }
 
-    async fn send_data(&mut self, block: &[u8], block_num: u16) -> Result<(), SendError> {
-        for attempt in 0..self.send_attempts {
-            if let Err(err) = self.udp_stream.send(block).await {
-                return Err(SendError::Network(err.to_string()));
-            }
-            match self.read_acknowledge().await {
-                Ok(block_ack) => {
-                    if block_ack == block_num {
-                        return Ok(());
-                    }
-                    eprintln!("{self}: Expected acknowledge {block_num}, received {block_ack}");
-                }
-                Err(SendError::Timeout) => {
-                    eprintln!("{self}: Timeout waiting for {block_num}, attempt {attempt}");
-                }
-                Err(send_error) => return Err(send_error),
-            }
-        }
-        Err(SendError::Timeout)
+    fn size(&self) -> u16 {
+        self.buffers.capacity() as u16
     }
 
-    async fn fire_error(&mut self, buffer: &[u8]) {
-        _ = self.udp_stream.send(buffer).await;
+    fn push_block(
+        &mut self,
+        opened_file: &mut dyn OpenedFile,
+        index: u16,
+    ) -> Result<(usize, bool), FileError> {
+        let buffer = self.buffer(index);
+        buffer[0] = 0;
+        buffer[1] = DATA as u8;
+        buffer[2] = (index >> 8) as u8;
+        buffer[3] = index as u8;
+        let read_bytes = opened_file.read_to(&mut buffer[4..])?;
+        buffer.truncate(read_bytes + 4);
+        Ok((read_bytes, read_bytes < self.block_size as usize))
+    }
+    fn buffer(&mut self, index: u16) -> &mut Vec<u8> {
+        let window_length = self.buffers.len();
+        let buffer = &mut self.buffers[index as usize % window_length];
+        unsafe { buffer.set_len(buffer.capacity()) }
+        buffer
     }
 
-    async fn read_acknowledge(&mut self) -> Result<u16, SendError> {
-        let recv_future = self.udp_stream.recv(&mut self.recv_buffer, 4);
-        if let Ok(read_result) = self.ack_timeout.timeout(recv_future).await {
-            let _read_size = match read_result {
-                Ok(size) => size,
-                Err(err) => return Err(SendError::Network(err.to_string())),
-            };
-            let mut datagram = ReadCursor::new(&self.recv_buffer);
-            match datagram.extract_ushort() {
-                Ok(opcode) if opcode == ACK => Ok(datagram
-                    .extract_ushort()
-                    .map_err(|_| SendError::ACKParseError)?),
-                Ok(opcode) if opcode == ERROR => {
-                    let error_code = datagram
-                        .extract_ushort()
-                        .map_err(|_| SendError::ACKParseError)?;
-                    let error_message = datagram
-                        .extract_string()
-                        .map_err(|_| SendError::ACKParseError)?;
-                    Err(SendError::ClientError(error_code, error_message))
-                }
-                Ok(opcode) => {
-                    eprintln!("{self}: Received unknown opcode 0x{opcode:02x}");
-                    Err(SendError::ACKParseError)
-                }
-                Err(_) => Err(SendError::ACKParseError),
-            }
-        } else {
-            Err(SendError::Timeout)
-        }
+    async fn send(&mut self, index: u16, datagram_stream: &DatagramStream) -> std::io::Result<()> {
+        let window_length = self.buffers.len();
+        let buffer = &mut self.buffers[index as usize % window_length];
+        datagram_stream.send(buffer).await
     }
 }
 
-impl Display for TFTPStream {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(f, "<TFTPStream: {} {}>", self.udp_stream, self.ack_timeout)
-    }
+fn push_ack(window: &mut Window, oack: &OptionsAcknowledge) -> Result<usize, BufferError> {
+    let buffer = window.buffer(0);
+    let read_bytes = oack.serialize(buffer)?;
+    buffer.truncate(read_bytes);
+    Ok(read_bytes)
 }
 
-impl Debug for TFTPStream {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(f, "<TFTPStream: {} {}>", self.udp_stream, self.ack_timeout)
+async fn send_file(
+    mut opened_file: Box<dyn OpenedFile>,
+    datagram_stream: &DatagramStream,
+    mut window: Window,
+    ack_timeout: AckTimeout,
+    buffer: &mut [u8],
+) -> Result<(usize, usize), TFTPError> {
+    let mut bytes_sent: usize = 0;
+    let mut blocks_sent: usize = 0;
+    let mut last_acknowledged_index: u16 = 0;
+    let mut last_read_index: u16 = 0;
+    let mut done = false;
+    while !done {
+        let unacknowledged_count = last_read_index.wrapping_sub(last_acknowledged_index);
+        debug_assert!(unacknowledged_count <= window.size());
+        let mut to_send = unacknowledged_count;
+        while to_send < window.size() {
+            last_read_index = last_read_index.wrapping_add(1);
+            if let Ok((read_bytes, is_last)) =
+                window.push_block(opened_file.as_mut(), last_read_index)
+            {
+                to_send += 1;
+                bytes_sent += read_bytes;
+                if is_last {
+                    done = true;
+                    break;
+                }
+            } else {
+                return Err(TFTPError::new("Read file error occurred", UNDEFINED_ERROR));
+            }
+        }
+        debug_assert!(to_send <= window.size());
+        last_acknowledged_index = match send_reliably(
+            &mut window,
+            &ack_timeout,
+            datagram_stream,
+            buffer,
+            last_acknowledged_index.wrapping_add(1),
+            to_send,
+        )
+        .await
+        {
+            Ok(received_acknowledged) => received_acknowledged,
+            Err(SendError::Timeout) => {
+                return Err(TFTPError::new("Send timeout occurred", UNDEFINED_ERROR));
+            }
+            Err(SendError::ClientError(code, string)) => {
+                eprintln!("{datagram_stream}: Early termination [{code}] {string}");
+                blocks_sent += to_send as usize;
+                return Ok((bytes_sent, blocks_sent));
+            }
+            Err(_) => {
+                return Err(TFTPError::new("Unknown error occurred", UNDEFINED_ERROR));
+            }
+        };
+    }
+    Ok((bytes_sent, blocks_sent))
+}
+
+async fn read_acknowledge(
+    datagram_stream: &DatagramStream,
+    buffer: &mut [u8],
+    ack_timeout: &AckTimeout,
+) -> Result<u16, RecvError> {
+    let recv_future = datagram_stream.recv(buffer, 4);
+    if let Ok(read_result) = ack_timeout.timeout(recv_future).await {
+        let _read_size = match read_result {
+            Ok(size) => size,
+            Err(err) => {
+                eprintln!("{datagram_stream}: Read error: {:?}", err);
+                return Err(RecvError::Network);
+            }
+        };
+        let mut datagram = ReadCursor::new(buffer);
+        match datagram.extract_ushort() {
+            Ok(opcode) if opcode == ACK => {
+                Ok(datagram.extract_ushort().map_err(|_| RecvError::ACKError)?)
+            }
+            Ok(opcode) if opcode == ERROR => {
+                let error_code = datagram.extract_ushort().map_err(|_| RecvError::ACKError)?;
+                let error_message = datagram.extract_string().map_err(|_| RecvError::ACKError)?;
+                Err(RecvError::ClientError(error_code, error_message))
+            }
+            Ok(opcode) => {
+                eprintln!("{datagram_stream}: Received unknown opcode 0x{opcode:02x}");
+                Err(RecvError::ACKError)
+            }
+            Err(_) => Err(RecvError::ACKError),
+        }
+    } else {
+        Err(RecvError::Timeout)
     }
 }
 
 #[derive(Debug)]
 pub(super) enum SendError {
-    Network(String),
+    Network,
     Timeout,
     ClientError(u16, String),
-    ACKParseError,
+    ACKError,
+}
+
+#[derive(Debug)]
+pub(super) enum RecvError {
+    Network,
+    Timeout,
+    ClientError(u16, String),
+    ACKError,
 }
 
 pub(super) struct PeerHandler {
@@ -312,17 +384,33 @@ async fn handle_request(
     send_sessions.insert(
         datagram_stream.remote_port(),
         tokio::task::spawn_local(async {
-            if let Some((mut tftp_stream, block_size)) = negotiate_options(
-                datagram_stream,
-                opened_file.as_mut(),
+            if let Some((window, ack_timeout)) = negotiate_options(
+                &datagram_stream,
+                &mut opened_file,
                 &mut send_buffer,
                 read_request.options,
             )
             .await
             {
-                send_file(opened_file, &mut tftp_stream, block_size, &mut send_buffer).await;
+                match send_file(
+                    opened_file,
+                    &datagram_stream,
+                    window,
+                    ack_timeout,
+                    &mut send_buffer,
+                )
+                .await
+                {
+                    Ok((sent_bytes, sent_blocks)) => eprintln!(
+                        "{datagram_stream}: Sent {sent_bytes} bytes, {sent_blocks} blocks"
+                    ),
+                    Err(tftp_error) => {
+                        fire_error(tftp_error, &datagram_stream, &mut send_buffer).await
+                    }
+                };
+                drop(send_buffer);
+                drop(datagram_stream);
             }
-            drop(send_buffer);
         }),
     );
     Ok(())
@@ -394,12 +482,54 @@ fn read_json(path: &Path) -> Option<Value> {
     None
 }
 
+async fn send_reliably(
+    window: &mut Window,
+    ack_timeout: &AckTimeout,
+    datagram_stream: &DatagramStream,
+    buffer: &mut [u8],
+    window_index: u16,
+    count: u16,
+) -> Result<u16, SendError> {
+    for attempt in 1..=SEND_ATTEMPTS {
+        for block_index in (0..count).map(|v| window_index.wrapping_add(v)) {
+            if let Err(send_error) = window.send(block_index, datagram_stream).await {
+                eprintln!(
+                    "{datagram_stream}: Network error while sending block {block_index}: {send_error}"
+                );
+                return Err(SendError::Network);
+            }
+        }
+        return match read_acknowledge(datagram_stream, buffer, ack_timeout).await {
+            Ok(received_ack) if received_ack >= window_index => Ok(received_ack),
+            Ok(unexpected_ack) => {
+                let tftp_error = TFTPError::new("Received ACK from the past", UNDEFINED_ERROR);
+                eprintln!(
+                    "{datagram_stream}: Received ACK {unexpected_ack} while expected > {window_index}"
+                );
+                fire_error(tftp_error, datagram_stream, buffer).await;
+                Err(SendError::ACKError)
+            }
+            Err(RecvError::Timeout) => {
+                let window_end_index = window_index.wrapping_add(count);
+                eprintln!(
+                    "{datagram_stream}: Timeout waiting for {window_index} .. {window_end_index}, attempt {attempt}"
+                );
+                continue;
+            }
+            Err(RecvError::ClientError(error_code, error_message)) => {
+                Err(SendError::ClientError(error_code, error_message))
+            }
+            Err(_) => Err(SendError::Network),
+        };
+    }
+    Err(SendError::Timeout)
+}
 async fn negotiate_options(
-    udp_stream: DatagramStream,
-    opened_file: &mut dyn OpenedFile,
-    send_buffer: &mut [u8],
+    datagram_stream: &DatagramStream,
+    opened_file: &mut Box<dyn OpenedFile>,
+    buffer: &mut [u8],
     options: HashMap<String, String>,
-) -> Option<(TFTPStream, Blksize)> {
+) -> Option<(Window, AckTimeout)> {
     let mut oack = OptionsAcknowledge::new();
     let ack_timeout = {
         if let Some(timeout) = AckTimeout::find_in(&options) {
@@ -417,42 +547,42 @@ async fn negotiate_options(
             Default::default()
         }
     };
-    let mut tftp_stream = TFTPStream::new(udp_stream, ack_timeout, 5);
     if TSize::is_requested(&options) {
-        match TSize::obtain(opened_file) {
+        match TSize::obtain(opened_file.as_mut()) {
             Ok(tsize) => oack.push(tsize.as_key_pair()),
             Err(err) => {
-                eprintln!("{tftp_stream}: Can't obtain TSize due to {err:?}")
+                eprintln!("{datagram_stream}: Can't obtain TSize due to {err:?}")
             }
         }
     };
+    let window_size = {
+        if let Some(window_size) = WindowSize::find_in(&options) {
+            oack.push(window_size.as_key_pair());
+            window_size
+        } else {
+            Default::default()
+        }
+    };
+    let mut window = Window::new(block_size.get_size() as u16, window_size.get_size() as u16);
     if oack.has_options() {
-        eprintln!("{tftp_stream}: {oack}");
-        match oack.serialize(send_buffer) {
-            Ok(oack_size) => match tftp_stream.send_data(&send_buffer[..oack_size], 0).await {
-                Ok(_) => {}
-                Err(SendError::ClientError(code, message)) => {
-                    eprintln!("{tftp_stream}: Client responded with [{code}]: {message}");
-                    return None;
-                }
-                Err(error) => {
-                    eprintln!("{tftp_stream}: Error sending options: {error:?}");
-                    return None;
-                }
-            },
+        eprintln!("{datagram_stream}: {oack}");
+        match push_ack(&mut window, &oack) {
+            Ok(_) => {}
             Err(buffer_error) => {
-                eprintln!("{tftp_stream}: Error building options: {buffer_error}");
+                eprintln!("{datagram_stream}: Error building options: {buffer_error}");
                 let tftp_error = TFTPError::new("OACK build error", UNDEFINED_ERROR);
-                if let Ok(error_length) = tftp_error.serialize(send_buffer) {
-                    tftp_stream.fire_error(&send_buffer[..error_length]).await;
-                } else {
-                    eprintln!("{tftp_stream}: Error serializing {buffer_error}");
-                }
+                fire_error(tftp_error, datagram_stream, buffer).await;
                 return None;
             }
         }
+        if let Err(error) =
+            send_reliably(&mut window, &ack_timeout, datagram_stream, buffer, 0, 1).await
+        {
+            eprintln!("{datagram_stream}: Error sending options: {error:?}");
+            return None;
+        }
     };
-    Some((tftp_stream, block_size))
+    Some((window, ack_timeout))
 }
 
 fn open_file(
@@ -471,76 +601,6 @@ fn open_file(
         }
     }
     Err(TFTPError::new("File not found", FILE_NOT_FOUND))
-}
-
-async fn send_file(
-    mut opened_file: Box<dyn OpenedFile>,
-    tftp_stream: &mut TFTPStream,
-    block_size: Blksize,
-    send_buffer: &mut [u8],
-) {
-    let mut offset: usize = 0;
-    let mut block_num: u16 = 1;
-    loop {
-        let header_size = place_block_header(send_buffer, block_num);
-        let chunk_size =
-            match block_size.read_chunk(opened_file.as_mut(), &mut send_buffer[header_size..]) {
-                Ok(chunk_size) => chunk_size,
-                Err(_err) => {
-                    let tftp_error = TFTPError::new("Read error occurred", UNDEFINED_ERROR);
-                    eprintln!("{tftp_stream}: {tftp_error}");
-                    if let Ok(error_length) = tftp_error.serialize(send_buffer) {
-                        tftp_stream.fire_error(&send_buffer[..error_length]).await;
-                    } else {
-                        eprintln!("{tftp_stream}: Error serializing {tftp_error}");
-                    }
-                    return;
-                }
-            };
-        match tftp_stream
-            .send_data(&send_buffer[..header_size + chunk_size], block_num)
-            .await
-        {
-            Ok(_) => {}
-            Err(SendError::Network(string)) => {
-                eprintln!("{tftp_stream}: Network error while sending block {block_num}: {string}");
-                return;
-            }
-            Err(SendError::Timeout) => {
-                let tftp_error =
-                    TFTPError::new(format!("Timed out block {block_num}"), UNDEFINED_ERROR);
-                eprintln!("{tftp_stream}: {tftp_error}");
-                if let Ok(error_length) = tftp_error.serialize(send_buffer) {
-                    tftp_stream.fire_error(&send_buffer[..error_length]).await;
-                } else {
-                    eprintln!("{tftp_stream}: Error serializing {tftp_error}");
-                }
-                return;
-            }
-            Err(SendError::ClientError(code, message)) => {
-                eprintln!("{tftp_stream}: Client error received: [{code}] {message}");
-                return;
-            }
-            Err(send_error) => {
-                eprintln!(
-                    "{tftp_stream}: Unknown error while sending block {block_num}: {send_error:?}"
-                );
-                return;
-            }
-        }
-        offset += chunk_size;
-        if block_size.is_last(chunk_size) {
-            eprintln!("{tftp_stream}: Sent {offset} bytes");
-            return;
-        }
-        block_num = block_num.wrapping_add(1);
-    }
-}
-
-fn place_block_header(buffer: &mut [u8], block_number: u16) -> usize {
-    let mut datagram = WriteCursor::new(buffer);
-    _ = datagram.put_ushort(DATA).unwrap();
-    datagram.put_ushort(block_number).unwrap()
 }
 
 #[derive(Debug)]
