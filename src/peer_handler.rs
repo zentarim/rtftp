@@ -419,22 +419,17 @@ async fn negotiate_options(
     if oack.has_options() {
         eprintln!("{tftp_stream}: {oack}");
         match oack.serialize(send_buffer) {
-            Ok((oack_size, block_num)) => {
-                match tftp_stream
-                    .send_data(&send_buffer[..oack_size], block_num)
-                    .await
-                {
-                    Ok(_) => {}
-                    Err(SendError::ClientError(code, message)) => {
-                        eprintln!("{tftp_stream}: Client responded with [{code}]: {message}");
-                        return None;
-                    }
-                    Err(error) => {
-                        eprintln!("{tftp_stream}: Error sending options: {error:?}");
-                        return None;
-                    }
+            Ok(oack_size) => match tftp_stream.send_data(&send_buffer[..oack_size], 0).await {
+                Ok(_) => {}
+                Err(SendError::ClientError(code, message)) => {
+                    eprintln!("{tftp_stream}: Client responded with [{code}]: {message}");
+                    return None;
                 }
-            }
+                Err(error) => {
+                    eprintln!("{tftp_stream}: Error sending options: {error:?}");
+                    return None;
+                }
+            },
             Err(buffer_error) => {
                 eprintln!("{tftp_stream}: Error building options: {buffer_error}");
                 let tftp_error = TFTPError::new("OACK build error", UNDEFINED_ERROR);

@@ -127,9 +127,9 @@ impl OptionsAcknowledge {
         }
     }
 
-    pub(super) fn serialize(&self, buffer: &mut [u8]) -> Result<(usize, u16), BufferError> {
+    pub(super) fn serialize(&self, buffer: &mut [u8]) -> Result<usize, BufferError> {
         if buffer.is_empty() {
-            return Ok((0, 0));
+            return Ok(0);
         }
         let mut datagram = WriteCursor::new(buffer);
         datagram.put_ushort(OACK)?;
@@ -141,7 +141,7 @@ impl OptionsAcknowledge {
             }
             offset
         };
-        Ok((offset, 0))
+        Ok(offset)
     }
     pub fn push(&mut self, option: (String, String)) {
         self.options.push(option)
