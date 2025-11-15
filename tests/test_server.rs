@@ -136,6 +136,37 @@ async fn attempt_download_nonexisting_file() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn attempt_download_file_default() {
+    let arbitrary_source_ip = "127.0.0.11";
+    let server_dir = mk_tmp(attempt_download_file_default);
+    let data = make_payload(512);
+    let file_name = "file.txt";
+    let file = server_dir.join("default").join(file_name);
+    _write_file(&file, &data);
+    let running_server = start_rtftp(server_dir).await;
+    let client = running_server.open_paired_client(arbitrary_source_ip).await;
+    let read_data = download(client, &file_name).await.unwrap();
+    assert_eq!(read_data, data);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn attempt_download_file_peer_takes_precendence() {
+    let arbitrary_source_ip = "127.0.0.11";
+    let server_dir = mk_tmp(attempt_download_file_peer_takes_precendence);
+    let file_name = "file.txt";
+    let default_data = make_payload(512);
+    let default_file = server_dir.join("default").join(file_name);
+    _write_file(&default_file, &default_data);
+    let peer_data = make_payload(768);
+    let peer_file = server_dir.join(arbitrary_source_ip).join(file_name);
+    _write_file(&peer_file, &peer_data);
+    let running_server = start_rtftp(server_dir).await;
+    let client = running_server.open_paired_client(arbitrary_source_ip).await;
+    let read_data = download(client, &file_name).await.unwrap();
+    assert_eq!(read_data, peer_data);
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn access_violation() {
     let server_dir = mk_tmp(access_violation);
     let arbitrary_source_ip = "127.0.0.11";

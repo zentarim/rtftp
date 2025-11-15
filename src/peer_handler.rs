@@ -177,6 +177,7 @@ impl PeerHandler {
                 let mut available_roots: Vec<Box<dyn Root>> =
                     vec![Box::new(LocalRoot::new(tftp_root.join(peer.to_string())))];
                 available_roots.extend(get_available_remote_roots(&tftp_root, &peer.to_string()));
+                available_roots.push(Box::new(LocalRoot::new(tftp_root.join("default"))));
                 eprintln!("{peer}: Available roots: {available_roots:?}");
                 let runtime = runtime::Builder::new_current_thread()
                     .enable_time()
