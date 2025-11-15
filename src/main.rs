@@ -1,3 +1,7 @@
+#[cfg(windows)]
+compile_error!(
+    "This project does not support building on Windows due to its reliance on libguestfs and inotify."
+);
 mod cursor;
 mod fs;
 mod fs_watch;
