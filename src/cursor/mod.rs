@@ -70,7 +70,8 @@ impl<'a> WriteCursor<'a> {
         if end_index > self.buffer.len() {
             return Err(BufferError::new("Too little data left to write u16"));
         }
-        self.buffer[self.offset..end_index].copy_from_slice(&value.to_be_bytes());
+        self.buffer[self.offset] = ((value & 0xFF00) >> 8) as u8;
+        self.buffer[self.offset + 1] = (value & 0xFF) as u8;
         self.offset = end_index;
         Ok(self.offset)
     }
