@@ -72,14 +72,6 @@ struct guestfs_stat {
     ctime: i64,
 }
 
-impl Drop for guestfs_stat {
-    fn drop(&mut self) {
-        unsafe {
-            guestfs_free_stat(self);
-        }
-    }
-}
-
 #[link(name = "guestfs")]
 unsafe extern "C" {
     fn guestfs_create() -> *const guestfs_h;
