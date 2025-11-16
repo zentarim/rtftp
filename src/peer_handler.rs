@@ -33,6 +33,23 @@ const ACCESS_VIOLATION: u16 = 0x02;
 
 const MAX_SESSIONS_PER_IP: usize = 128;
 
+
+async fn fire_error(error: TFTPError, datagram_stream: &DatagramStream, buffer: &mut [u8]) {
+    match error.serialize(buffer) {
+        Ok(to_send) => {
+            if let Err(send_error) = datagram_stream.send(&buffer[..to_send]).await {
+                eprintln!("{datagram_stream}: Error sending {error}: {send_error}");
+            } else {
+                eprintln!("{datagram_stream}: Sent {error}");
+            }
+        }
+        Err(buffer_error) => {
+            eprintln!("{datagram_stream}: Error serializing {error}: {buffer_error}")
+        }
+    }
+}
+
+
 pub(super) struct TFTPStream {
     udp_stream: DatagramStream,
     ack_timeout: AckTimeout,
@@ -279,22 +296,14 @@ async fn handle_request(
     if send_sessions.len() >= send_sessions.capacity() {
         let error_message = "Maximum sessions per IP exceeded";
         let tftp_error = TFTPError::new(error_message, UNDEFINED_ERROR);
-        if let Ok(to_send) = tftp_error.serialize(&mut send_buffer)
-            && let Err(error) = datagram_stream.send(&send_buffer[..to_send]).await
-        {
-            eprintln!("{datagram_stream}: Error sending {tftp_error}: {error}");
-        }
+        fire_error(tftp_error, &datagram_stream, &mut send_buffer).await;
         return Err(IrrecoverableError(error_message.to_owned()));
     };
     let mut opened_file = match open_file(&read_request, available_roots) {
         Ok(file) => file,
         Err(tftp_error) => {
             eprintln!("{datagram_stream}: {read_request} denied: {tftp_error}");
-            if let Ok(to_send) = tftp_error.serialize(&mut send_buffer)
-                && let Err(error) = datagram_stream.send(&send_buffer[..to_send]).await
-            {
-                eprintln!("{datagram_stream}: Error sending {tftp_error}: {error}");
-            }
+            fire_error(tftp_error, &datagram_stream, &mut send_buffer).await;
             return Ok(());
         }
     };
