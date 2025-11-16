@@ -45,6 +45,14 @@ fn test_timeout_bottom() {
 }
 
 #[test]
+fn test_block_size_bottom() {
+    let mut options = HashMap::new();
+    options.insert(BLKSIZE.to_string(), 7.to_string());
+    let find_result = Blksize::find_in(&options);
+    assert!(find_result.is_none());
+}
+
+#[test]
 fn test_block_size_cap() {
     let mut options = HashMap::new();
     options.insert(BLKSIZE.to_string(), (BLOCK_SIZE_LIMIT + 1).to_string());
