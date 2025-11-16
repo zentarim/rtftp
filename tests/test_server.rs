@@ -294,6 +294,7 @@ async fn change_timeout() {
         (Vec::new(), 0u64),
         (Vec::new(), 0u64),
         (Vec::new(), 0u64),
+        (Vec::new(), 0u64),
     ];
     let local_read_timeout = 2usize;
     let mut buffer = [0u8; _BUFFER_SIZE];
@@ -352,14 +353,24 @@ async fn change_timeout() {
         retry_buffers[3].1, 4
     );
     assert_eq!(
-        retry_buffers[4].0, b"",
+        retry_buffers[4].0, b"\x00\x05\x00\x00Send timeout occurred\x00",
         "5: Received: {:?}, Expected: {:?}",
-        retry_buffers[4].0, b""
+        retry_buffers[4].0, b"\x00\x05\x00\x00Send timeout occurred\x00"
     );
     assert_eq!(
-        retry_buffers[4].1, 0,
+        retry_buffers[4].1, 5,
         "5: Timestamp mismatch. Received: {}, Expected: {}",
         retry_buffers[4].1, 5
+    );
+    assert_eq!(
+        retry_buffers[5].0, b"",
+        "5: Received: {:?}, Expected: {:?}",
+        retry_buffers[5].0, b""
+    );
+    assert_eq!(
+        retry_buffers[5].1, 0,
+        "5: Timestamp mismatch. Received: {}, Expected: {}",
+        retry_buffers[5].1, 0
     );
 }
 

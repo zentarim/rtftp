@@ -1,4 +1,4 @@
-use crate::cursor::{BufferError, ReadCursor};
+use crate::cursor::ReadCursor;
 use crate::datagram_stream::DatagramStream;
 use crate::fs::{FileError, OpenedFile, Root};
 use crate::local_fs::LocalRoot;
@@ -9,6 +9,7 @@ use crate::remote_fs::{Config, VirtualRootError};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::fmt::{Debug, Display, Formatter};
+use std::io;
 use std::net::{IpAddr, SocketAddr};
 use std::ops::DerefMut;
 use std::path::{Path, PathBuf};
@@ -98,13 +99,6 @@ impl Window {
         let buffer = &mut self.buffers[index as usize % window_length];
         datagram_stream.send(buffer).await
     }
-}
-
-fn push_ack(window: &mut Window, oack: &OptionsAcknowledge) -> Result<usize, BufferError> {
-    let buffer = window.buffer(0);
-    let read_bytes = oack.serialize(buffer)?;
-    buffer.truncate(read_bytes);
-    Ok(read_bytes)
 }
 
 async fn send_file(
@@ -524,6 +518,57 @@ async fn send_reliably(
     }
     Err(SendError::Timeout)
 }
+
+async fn send_oack_reliably(
+    oack: &OptionsAcknowledge,
+    datagram_stream: &DatagramStream,
+    ack_timeout: &AckTimeout,
+    buffer: &mut [u8],
+) -> io::Result<()> {
+    let oack_index = 0;
+    let oack_size = match oack.serialize(buffer) {
+        Ok(size) => size,
+        Err(buffer_error) => {
+            let tftp_error = TFTPError::new("OACK build error", UNDEFINED_ERROR);
+            fire_error(tftp_error, datagram_stream, buffer).await;
+            return Err(io::Error::other(format!(
+                "Error building options: {buffer_error}"
+            )));
+        }
+    };
+    for attempt in 1..=SEND_ATTEMPTS {
+        datagram_stream.send(&buffer[..oack_size]).await?;
+        match read_acknowledge(datagram_stream, buffer, ack_timeout).await {
+            Ok(ack_num) if ack_num == oack_index => return Ok(()),
+            Ok(ack_num) => {
+                let tftp_error = TFTPError::new("Unexpected non-zero ACK", UNDEFINED_ERROR);
+                fire_error(tftp_error, datagram_stream, buffer).await;
+                return Err(io::Error::other(format!(
+                    "Received unexpected ACK {ack_num} while expecting {oack_index}"
+                )));
+            }
+            Err(RecvError::Timeout) => {
+                eprintln!("Timeout waiting for ACK {oack_index}, attempt {attempt}");
+                continue;
+            }
+            Err(RecvError::ClientError(code, string)) => {
+                return Err(io::Error::other(format!(
+                    "Early termination while options negotiation [{code}] {string}"
+                )));
+            }
+            Err(error) => {
+                return Err(io::Error::other(format!("ACK read error: {:?}", error)));
+            }
+        }
+    }
+    let tftp_error = TFTPError::new("Send timeout occurred", UNDEFINED_ERROR);
+    fire_error(tftp_error, datagram_stream, buffer).await;
+    Err(io::Error::new(
+        io::ErrorKind::TimedOut,
+        format!("Timeout waiting for ACK {oack_index}"),
+    ))
+}
+
 async fn negotiate_options(
     datagram_stream: &DatagramStream,
     opened_file: &mut Box<dyn OpenedFile>,
@@ -563,25 +608,14 @@ async fn negotiate_options(
             Default::default()
         }
     };
-    let mut window = Window::new(block_size.get_size() as u16, window_size.get_size() as u16);
-    if oack.has_options() {
-        eprintln!("{datagram_stream}: {oack}");
-        match push_ack(&mut window, &oack) {
-            Ok(_) => {}
-            Err(buffer_error) => {
-                eprintln!("{datagram_stream}: Error building options: {buffer_error}");
-                let tftp_error = TFTPError::new("OACK build error", UNDEFINED_ERROR);
-                fire_error(tftp_error, datagram_stream, buffer).await;
-                return None;
-            }
-        }
-        if let Err(error) =
-            send_reliably(&mut window, &ack_timeout, datagram_stream, buffer, 0, 1).await
-        {
-            eprintln!("{datagram_stream}: Error sending options: {error:?}");
-            return None;
-        }
+    if oack.has_options()
+        && let Err(oack_negotiation_error) =
+            send_oack_reliably(&oack, datagram_stream, &ack_timeout, buffer).await
+    {
+        eprintln!("{datagram_stream}: {oack_negotiation_error}");
+        return None;
     };
+    let window = Window::new(block_size.get_size() as u16, window_size.get_size() as u16);
     Some((window, ack_timeout))
 }
 
