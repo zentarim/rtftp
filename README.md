@@ -39,6 +39,10 @@ To enable a client with IP `X.X.X.X` to receive files from a remote NBD disk, cr
 
 ---
 
+Additionally, RTFTP supports proactive setup of NBD connections upon the appearance of an NBD configuration file by utilizing [**inotify**](https://man7.org/linux/man-pages/man7/inotify.7.html) subsystem. With this approach, the remote filesystem is already up and running before the first TFTP request arrives.
+
+---
+
 ## Example
 
 TFTP root directory layout:
