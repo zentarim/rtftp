@@ -28,13 +28,10 @@ impl Blksize {
         if let Some(block_size_string) = options.get(BLKSIZE)
             && let Ok(block_size) = block_size_string.parse::<usize>()
         {
-            if block_size < BLOCK_SIZE_LIMIT {
+            if (8..=BLOCK_SIZE_LIMIT).contains(&block_size) {
                 return Some(Self { block_size });
             } else {
-                eprintln!(
-                    "Requested block size {block_size} exceeds \
-                        maximum allowed block size {BLOCK_SIZE_LIMIT}"
-                );
+                eprintln!("Requested {block_size} doesn't fit in range 8 .. ={BLOCK_SIZE_LIMIT}");
             }
         }
         None
