@@ -1,4 +1,5 @@
 SHELL := /bin/bash
+CPU_CORES := $(shell nproc)
 .DEFAULT_GOAL := all
 
 all: lint test release
@@ -13,7 +14,7 @@ release:
 	cargo build --release
 
 test:
-	cargo test --release
+	cargo test --release -- --test-threads ${CPU_CORES}
 
 lint:
 	cargo clippy -- -D warnings
