@@ -18,6 +18,7 @@ mod server;
 use crate::fs_watch::Watch;
 use clap::Parser;
 use server::TFTPServer;
+use std::fs::File;
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::string::String;
@@ -60,7 +61,17 @@ struct Args {
     idle_timeout: u64,
 }
 
+fn warn_if_kvm_unavailable() {
+    if let Err(error) = File::open("/dev/kvm") {
+        eprintln!(
+            "WARNING: /dev/kvm is not accessible ({error}). \
+             Falling back to software virtualization may significantly slow down NBD shares."
+        );
+    }
+}
+
 fn main() -> ExitCode {
+    warn_if_kvm_unavailable();
     LocalSet::new().block_on(
         &Builder::new_current_thread().enable_all().build().unwrap(),
         async_main(),
