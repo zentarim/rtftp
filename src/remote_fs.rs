@@ -6,45 +6,48 @@ use std::fmt::{Debug, Display, Formatter};
 use std::path::PathBuf;
 use std::rc::Rc;
 
-pub(super) struct RemoteChroot {
+pub(super) struct RemoteRoot {
     disk: ConnectedDisk,
-    path: PathBuf,
+    chroot_path: PathBuf,
 }
 
-impl RemoteChroot {
-    pub(super) fn new(disk: ConnectedDisk, path: &str) -> Self {
+impl RemoteRoot {
+    pub(super) fn new(disk: ConnectedDisk, chroot_path: &str) -> Self {
         Self {
             disk,
-            path: PathBuf::from(path),
+            chroot_path: PathBuf::from(chroot_path),
         }
     }
 }
 
-impl Root for RemoteChroot {
+impl Root for RemoteRoot {
     fn open(&self, path: &str) -> Result<Box<dyn OpenedFile>, FileError> {
-        match self.disk.open(self.path.join(path).to_str().unwrap()) {
+        match self
+            .disk
+            .open(self.chroot_path.join(path).to_str().unwrap())
+        {
             Ok(opened_file) => Ok(opened_file),
             Err(err) => Err(err),
         }
     }
 }
 
-impl Debug for RemoteChroot {
+impl Debug for RemoteRoot {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write! {f, "<{:?} in {}>", self.path, self.disk}
+        write! {f, "<{:?} in {}>", self.chroot_path, self.disk}
     }
 }
 
-impl Display for RemoteChroot {
+impl Display for RemoteRoot {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write! {f, "<{:?} in {}>", self.path, self.disk}
+        write! {f, "<{:?} in {}>", self.chroot_path, self.disk}
     }
 }
 
 pub(super) trait Config<'a>: Deserialize<'a> {
     fn from_json(value: &Value) -> Option<Self>;
 
-    fn connect(&self) -> Result<RemoteChroot, VirtualRootError>;
+    fn connect(&self) -> Result<RemoteRoot, VirtualRootError>;
 }
 
 #[derive(Debug)]
