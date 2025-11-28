@@ -1,5 +1,5 @@
 use crate::guestfs::{GuestFS, GuestFSError};
-use crate::remote_fs::{Config, ConnectedDisk, Mount, RemoteChroot, VirtualRootError};
+use crate::remote_fs::{Config, ConnectedDisk, Mount, RemoteRoot, VirtualRootError};
 use serde::Deserialize;
 use serde_json::{Value, from_value};
 use std::fmt::Debug;
@@ -68,7 +68,7 @@ impl<'a> Config<'a> for NBDConfig {
             }
         }
     }
-    fn connect(&self) -> Result<RemoteChroot, VirtualRootError> {
+    fn connect(&self) -> Result<RemoteRoot, VirtualRootError> {
         if !self.url.starts_with("nbd://") {
             return Err(VirtualRootError::ConfigError(format!(
                 "Invalid NBD URL: {}",
@@ -86,6 +86,6 @@ impl<'a> Config<'a> for NBDConfig {
         for mountpoint_config in &self.mounts {
             mountpoint_config.mount_suitable(&partitions)?;
         }
-        Ok(RemoteChroot::new(disk, &self.tftp_root))
+        Ok(RemoteRoot::new(disk, &self.tftp_root))
     }
 }
