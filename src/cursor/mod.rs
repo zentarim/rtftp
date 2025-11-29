@@ -1,4 +1,5 @@
 use std::fmt::{Display, Formatter};
+use std::io;
 
 #[cfg(test)]
 mod tests;
@@ -13,19 +14,19 @@ impl<'a> ReadCursor<'a> {
         Self { datagram, index: 0 }
     }
 
-    pub(super) fn extract_ushort(&mut self) -> Result<u16, ParseError> {
+    pub(super) fn extract_ushort(&mut self) -> io::Result<u16> {
         let end_index = self.index + 2;
         if end_index > self.datagram.len() {
-            return Err(ParseError::NotEnoughData);
+            return Err(io::ErrorKind::UnexpectedEof.into());
         }
         let result = u16::from_be_bytes([self.datagram[self.index], self.datagram[self.index + 1]]);
         self.index = end_index;
         Ok(result)
     }
 
-    pub(super) fn extract_string(&mut self) -> Result<String, ParseError> {
+    pub(super) fn extract_string(&mut self) -> io::Result<String> {
         if self.index >= self.datagram.len() {
-            return Err(ParseError::NotEnoughData);
+            return Err(io::ErrorKind::UnexpectedEof.into());
         };
         if let Some(relative_null_index) = self.datagram[self.index..].iter().position(|&b| b == 0)
         {
@@ -35,23 +36,17 @@ impl<'a> ReadCursor<'a> {
                     self.index = absolute_null_index + 1;
                     Ok(string)
                 }
-                Err(_) => Err(ParseError::generic("Can't parse UTF-8")),
+                Err(_) => Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "Can't parse UTF-8",
+                )),
             }
         } else {
-            Err(ParseError::generic("Null-terminated string is not found"))
+            Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Null-terminated string is not found",
+            ))
         }
-    }
-}
-
-#[derive(Debug)]
-pub(super) enum ParseError {
-    Generic(String),
-    NotEnoughData,
-}
-
-impl ParseError {
-    pub fn generic<T: Into<String>>(msg: T) -> Self {
-        ParseError::Generic(msg.into())
     }
 }
 
