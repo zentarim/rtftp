@@ -1,8 +1,8 @@
-use crate::cursor::{BufferError, ParseError, ReadCursor, WriteCursor};
+use crate::cursor::{BufferError, ReadCursor, WriteCursor};
 use crate::fs::{FileError, OpenedFile, Root};
 use std::collections::HashMap;
-use std::fmt;
 use std::fmt::{Debug, Display};
+use std::{fmt, io};
 
 #[cfg(test)]
 mod tests;
@@ -95,8 +95,8 @@ impl ReadRequest {
         loop {
             let option_name = match cursor.extract_string() {
                 Ok(name) => name,
-                Err(ParseError::NotEnoughData) => break,
-                Err(ParseError::Generic(_error)) => {
+                Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => break,
+                Err(_error) => {
                     return Err(TFTPError::new("Bad format", UNDEFINED_ERROR));
                 }
             };
