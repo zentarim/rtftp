@@ -1,3 +1,4 @@
+use std::error::Error;
 use std::ffi::{CStr, CString};
 use std::fmt::{Debug, Display, Formatter};
 use std::str::FromStr;
@@ -371,3 +372,5 @@ impl Display for GuestFSError {
         write! {f, "<GuestFSError: {self:?}>"}
     }
 }
+
+impl Error for GuestFSError {}
