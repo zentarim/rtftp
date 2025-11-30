@@ -1,5 +1,5 @@
 use crate::datagram_stream::DatagramStream;
-use crate::fs::{FileError, OpenedFile};
+use crate::fs::OpenedFile;
 use crate::options::AckTimeout;
 use crate::peer_handler::{ACK, DATA, Window, send_file};
 use std::time::Duration;
@@ -58,7 +58,7 @@ impl fmt::Debug for VirtualOpenedFile {
 }
 
 impl OpenedFile for VirtualOpenedFile {
-    fn read_to(&mut self, buffer: &mut [u8]) -> Result<usize, FileError> {
+    fn read_to(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
         let slice_length = buffer.len().min(self.buffer.len() - self.offset);
         eprintln!("{}: {} {}", self, slice_length, buffer.len());
         buffer[..slice_length]
@@ -67,7 +67,7 @@ impl OpenedFile for VirtualOpenedFile {
         Ok(slice_length)
     }
 
-    fn get_size(&mut self) -> Result<usize, FileError> {
+    fn get_size(&mut self) -> io::Result<usize> {
         Ok(self.buffer.len())
     }
 }

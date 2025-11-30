@@ -1,8 +1,8 @@
-use crate::fs::{FileError, OpenedFile};
+use crate::fs::OpenedFile;
 use std::collections::HashMap;
-use std::fmt;
 use std::fmt::Display;
 use std::time::Duration;
+use std::{fmt, io};
 use tokio::time::timeout;
 
 #[cfg(test)]
@@ -110,7 +110,7 @@ impl TSize {
         options.contains_key(TSIZE)
     }
 
-    pub(super) fn obtain(opened_file: &mut dyn OpenedFile) -> Result<Self, FileError> {
+    pub(super) fn obtain(opened_file: &mut dyn OpenedFile) -> io::Result<Self> {
         let file_size = opened_file.get_size()?;
         Ok(Self { file_size })
     }

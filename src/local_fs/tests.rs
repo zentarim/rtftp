@@ -2,6 +2,7 @@ use super::*;
 use std::any::type_name;
 use std::env;
 use std::fs::{Permissions, create_dir, set_permissions};
+use std::io::ErrorKind;
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 
@@ -23,7 +24,7 @@ fn open_non_existent() {
         path: PathBuf::from("/nonexistent"),
     };
     let result = local_root.open("nonexistent.file");
-    assert_eq!(result.err().unwrap(), FileError::FileNotFound);
+    assert_eq!(result.err().unwrap().kind(), ErrorKind::NotFound);
 }
 
 #[test]
@@ -34,7 +35,7 @@ fn open_access_denied() {
         path: unreadable_directory,
     };
     let result = local_root.open("nonexistent");
-    assert_eq!(result.err().unwrap(), FileError::AccessViolation);
+    assert_eq!(result.err().unwrap().kind(), ErrorKind::PermissionDenied);
 }
 
 #[test]

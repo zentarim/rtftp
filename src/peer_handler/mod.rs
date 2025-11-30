@@ -1,6 +1,6 @@
 use crate::cursor::ReadCursor;
 use crate::datagram_stream::DatagramStream;
-use crate::fs::{FileError, OpenedFile, Root};
+use crate::fs::{OpenedFile, Root};
 use crate::local_fs::LocalRoot;
 use crate::messages::{OptionsAcknowledge, ReadRequest, TFTPError, UNDEFINED_ERROR};
 use crate::nbd_disk::NBDConfig;
@@ -77,7 +77,7 @@ impl Window {
         &mut self,
         opened_file: &mut dyn OpenedFile,
         index: u16,
-    ) -> Result<(usize, bool), FileError> {
+    ) -> io::Result<(usize, bool)> {
         let buffer = self.buffer(index);
         buffer[0] = 0;
         buffer[1] = DATA as u8;
@@ -94,7 +94,7 @@ impl Window {
         buffer
     }
 
-    async fn send(&mut self, index: u16, datagram_stream: &DatagramStream) -> std::io::Result<()> {
+    async fn send(&mut self, index: u16, datagram_stream: &DatagramStream) -> io::Result<()> {
         let window_length = self.buffers.len();
         let buffer = &mut self.buffers[index as usize % window_length];
         datagram_stream.send(buffer).await
@@ -626,11 +626,10 @@ fn open_file(
     for remote_root in roots.iter_mut() {
         match read_request.open_in(remote_root.deref_mut()) {
             Ok(file) => return Ok(file),
-            Err(FileError::FileNotFound) => continue,
-            Err(FileError::AccessViolation) => {
+            Err(err) if err.kind() == io::ErrorKind::NotFound => continue,
+            Err(err) if err.kind() == io::ErrorKind::PermissionDenied => {
                 return Err(TFTPError::new("Access violation", ACCESS_VIOLATION));
             }
-            Err(FileError::ReadError) => return Err(TFTPError::new("Read error", UNDEFINED_ERROR)),
             Err(_unknown_error) => return Err(TFTPError::new("Server Error", UNDEFINED_ERROR)),
         }
     }

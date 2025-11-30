@@ -1,8 +1,9 @@
-use crate::fs::{FileError, OpenedFile, Root};
+use crate::fs::{OpenedFile, Root};
 use crate::guestfs::{GuestFS, GuestFSError};
 use serde::Deserialize;
 use serde_json::Value;
 use std::fmt::{Debug, Display, Formatter};
+use std::io;
 use std::path::PathBuf;
 use std::rc::Rc;
 
@@ -21,7 +22,7 @@ impl RemoteRoot {
 }
 
 impl Root for RemoteRoot {
-    fn open(&self, path: &str) -> Result<Box<dyn OpenedFile>, FileError> {
+    fn open(&self, path: &str) -> io::Result<Box<dyn OpenedFile>> {
         match self
             .disk
             .open(self.chroot_path.join(path).to_str().unwrap())
@@ -194,7 +195,7 @@ impl Display for FileReader {
 }
 
 impl OpenedFile for FileReader {
-    fn read_to(&mut self, buffer: &mut [u8]) -> Result<usize, FileError> {
+    fn read_to(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
         let mut read: usize = 0;
         while self.current_offset < self.file_size && read < buffer.len() {
             let copied = self.chunk.fill(&mut buffer[read..]);
@@ -202,7 +203,7 @@ impl OpenedFile for FileReader {
                 let chunk_has_data = match self.buffer_new_chunk() {
                     Ok(result) => result,
                     Err(guestfs_error) => {
-                        return Err(FileError::UnknownError(guestfs_error.to_string()));
+                        return Err(io::Error::other(guestfs_error));
                     }
                 };
                 if !chunk_has_data {
@@ -215,7 +216,7 @@ impl OpenedFile for FileReader {
         Ok(read)
     }
 
-    fn get_size(&mut self) -> Result<usize, FileError> {
+    fn get_size(&mut self) -> io::Result<usize> {
         Ok(self.file_size)
     }
 }
@@ -252,7 +253,7 @@ impl ConnectedDisk {
         Ok(result)
     }
 
-    pub(super) fn open(&self, absolute_path: &str) -> Result<Box<dyn OpenedFile>, FileError> {
+    pub(super) fn open(&self, absolute_path: &str) -> io::Result<Box<dyn OpenedFile>> {
         let file_size = match self.handle.get_size(absolute_path) {
             Ok(file_size) => file_size,
             Err(guestfs_error) => {
@@ -260,9 +261,9 @@ impl ConnectedDisk {
                     .to_string()
                     .contains("No such file or directory")
                 {
-                    Err(FileError::FileNotFound)
+                    Err(io::ErrorKind::NotFound.into())
                 } else {
-                    Err(FileError::UnknownError(guestfs_error.to_string()))
+                    Err(io::Error::other(guestfs_error))
                 };
             }
         };
@@ -274,7 +275,7 @@ impl ConnectedDisk {
             display,
         ) {
             Ok(file_reader) => Ok(Box::new(file_reader)),
-            Err(guestfs_error) => Err(FileError::UnknownError(guestfs_error.to_string())),
+            Err(guestfs_error) => Err(io::Error::other(guestfs_error)),
         }
     }
 }

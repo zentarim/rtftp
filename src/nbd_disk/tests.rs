@@ -1,8 +1,8 @@
 use super::*;
-use crate::fs::{FileError, OpenedFile, Root};
+use crate::fs::{OpenedFile, Root};
 use serde_json::json;
 use std::fs::File;
-use std::io::BufRead;
+use std::io::{BufRead, ErrorKind};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
 use std::{fs, io, thread, time};
@@ -262,7 +262,7 @@ fn open_existing_file() {
     let file = "/boot/aligned.file";
     let opened = disk.open(file);
     assert!(opened.is_ok());
-    assert_eq!(opened.unwrap().get_size(), Ok(4194304));
+    assert_eq!(opened.unwrap().get_size().unwrap(), 4194304);
 }
 
 #[test]
@@ -273,9 +273,8 @@ fn open_non_existing_file() {
     let root = partitions.get(1).unwrap();
     assert!(root.mount_ro("/").is_ok());
     let file = "/nonexisting/file";
-    let opened = disk.open(file);
-    assert!(opened.is_err());
-    assert!(matches!(opened.err().unwrap(), FileError::FileNotFound))
+    let result = disk.open(file);
+    assert_eq!(result.err().unwrap().kind(), ErrorKind::NotFound);
 }
 
 #[test]

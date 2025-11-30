@@ -1,5 +1,5 @@
 use crate::cursor::{BufferError, ReadCursor, WriteCursor};
-use crate::fs::{FileError, OpenedFile, Root};
+use crate::fs::{OpenedFile, Root};
 use std::collections::HashMap;
 use std::fmt::{Debug, Display};
 use std::{fmt, io};
@@ -108,7 +108,7 @@ impl ReadRequest {
         }
         Ok(ReadRequest { filename, options })
     }
-    pub(super) fn open_in(&self, filesystem: &dyn Root) -> Result<Box<dyn OpenedFile>, FileError> {
+    pub(super) fn open_in(&self, filesystem: &dyn Root) -> io::Result<Box<dyn OpenedFile>> {
         let normalized_path = self.filename.trim_start_matches('/');
         eprintln!("Opening {normalized_path} in {filesystem} ...");
         filesystem.open(normalized_path)
