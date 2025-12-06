@@ -11,7 +11,6 @@ use std::collections::HashMap;
 use std::fmt::{Debug, Display, Formatter};
 use std::io;
 use std::net::{IpAddr, SocketAddr};
-use std::ops::DerefMut;
 use std::path::{Path, PathBuf};
 use std::thread::Builder;
 use std::time::Duration;
@@ -290,7 +289,7 @@ impl PeerHandler {
 async fn peer_requests_handler(
     peer: IpAddr,
     local_address: IpAddr,
-    mut available_roots: Vec<Box<dyn Root>>,
+    available_roots: Vec<Box<dyn Root>>,
     mut rx_channel: Receiver<(u16, ReadRequest)>,
     idle_timeout: Duration,
 ) {
@@ -321,7 +320,7 @@ async fn peer_requests_handler(
                     fire_error(tftp_error, &datagram_stream, &mut buffer).await;
                 };
                 if let Some(handle) =
-                    handle_request(request, buffer, &mut available_roots, datagram_stream).await
+                    handle_request(request, buffer, &available_roots, datagram_stream).await
                 {
                     send_sessions.insert(peer_port, handle);
                 };
@@ -355,7 +354,7 @@ async fn peer_requests_handler(
 async fn handle_request(
     read_request: ReadRequest,
     mut buffer: Vec<u8>,
-    available_roots: &mut [Box<dyn Root>],
+    available_roots: &[Box<dyn Root>],
     datagram_stream: DatagramStream,
 ) -> Option<JoinHandle<()>> {
     let mut opened_file = match open_file(&read_request, available_roots) {
@@ -607,10 +606,10 @@ async fn negotiate_options(
 
 fn open_file(
     read_request: &ReadRequest,
-    roots: &mut [Box<dyn Root>],
+    roots: &[Box<dyn Root>],
 ) -> Result<Box<dyn OpenedFile>, TFTPError> {
-    for remote_root in roots.iter_mut() {
-        match read_request.open_in(remote_root.deref_mut()) {
+    for remote_root in roots {
+        match read_request.open_in(remote_root.as_ref()) {
             Ok(file) => return Ok(file),
             Err(err) if err.kind() == io::ErrorKind::NotFound => continue,
             Err(err) if err.kind() == io::ErrorKind::PermissionDenied => {
