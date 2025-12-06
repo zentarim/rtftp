@@ -297,66 +297,8 @@ async fn peer_requests_handler(
         HashMap::with_capacity(MAX_SESSIONS_PER_IP);
     let mut last_active = time::Instant::now();
     loop {
-        match timeout(Duration::from_secs(1), rx_channel.recv()).await {
-            Ok(Some((peer_port, request))) => {
-                eprintln!("{peer}: sessions: {:?}", send_sessions.len());
-                if send_sessions.contains_key(&peer_port) {
-                    eprintln!("{peer}: Ignore repeated request from port {peer_port}");
-                    continue;
-                };
-                let local_socket = UdpSocket::bind(SocketAddr::new(local_address, 0))
-                    .await
-                    .unwrap_or_else(|_| {
-                        panic!("Can't bind to address {local_address} to random port")
-                    });
-                let datagram_stream =
-                    DatagramStream::new(local_socket, SocketAddr::new(peer, peer_port));
-                let mut buffer: Vec<u8> = vec![0; u16::MAX as usize];
-                send_sessions.retain(|_peer_port, handle| !handle.is_finished());
-                if send_sessions.len() >= send_sessions.capacity() {
-                    let error_message = "Maximum sessions per IP exceeded";
-                    eprintln!("{peer}: {error_message}");
-                    let tftp_error = TFTPError::new(error_message, UNDEFINED_ERROR);
-                    fire_error(tftp_error, &datagram_stream, &mut buffer).await;
-                };
-                let mut opened_file = match open_file(&request, &available_roots) {
-                    Ok(file) => file,
-                    Err(tftp_error) => {
-                        eprintln!("{datagram_stream}: {request} denied: {tftp_error}");
-                        fire_error(tftp_error, &datagram_stream, &mut buffer).await;
-                        continue;
-                    }
-                };
-                eprintln!("{datagram_stream}: Opened {opened_file} ({request})");
-                let handle = tokio::task::spawn_local(async {
-                    if let Some((window, ack_timeout)) = negotiate_options(
-                        &datagram_stream,
-                        &mut opened_file,
-                        &mut buffer,
-                        request.options,
-                    )
-                        .await
-                    {
-                        match send_file(
-                            opened_file,
-                            &datagram_stream,
-                            window,
-                            ack_timeout,
-                            &mut buffer,
-                        )
-                            .await
-                        {
-                            Ok((sent_bytes, sent_blocks)) => {
-                                eprintln!("{datagram_stream}: Sent {sent_bytes} bytes, {sent_blocks} blocks")
-                            }
-                            Err(tftp_error) => fire_error(tftp_error, &datagram_stream, &mut buffer).await,
-                        };
-                        drop(buffer);
-                        drop(datagram_stream);
-                    }
-                });
-                send_sessions.insert(peer_port, handle);
-            }
+        let (peer_port, request) = match timeout(Duration::from_secs(1), rx_channel.recv()).await {
+            Ok(Some(result)) => result,
             Ok(None) => {
                 eprintln!("{peer}: Handler shutdown is requested");
                 break;
@@ -371,8 +313,65 @@ async fn peer_requests_handler(
                 } else {
                     last_active = time::Instant::now();
                 }
+                continue;
             }
         };
+        eprintln!("{peer}: sessions: {:?}", send_sessions.len());
+        if send_sessions.contains_key(&peer_port) {
+            eprintln!("{peer}: Ignore repeated request from port {peer_port}");
+            continue;
+        };
+        let local_socket = UdpSocket::bind(SocketAddr::new(local_address, 0))
+            .await
+            .unwrap_or_else(|_| panic!("Can't bind to address {local_address} to random port"));
+        let datagram_stream = DatagramStream::new(local_socket, SocketAddr::new(peer, peer_port));
+        let mut buffer: Vec<u8> = vec![0; u16::MAX as usize];
+        send_sessions.retain(|_peer_port, handle| !handle.is_finished());
+        if send_sessions.len() >= send_sessions.capacity() {
+            let error_message = "Maximum sessions per IP exceeded";
+            eprintln!("{peer}: {error_message}");
+            let tftp_error = TFTPError::new(error_message, UNDEFINED_ERROR);
+            fire_error(tftp_error, &datagram_stream, &mut buffer).await;
+        };
+        let mut opened_file = match open_file(&request, &available_roots) {
+            Ok(file) => file,
+            Err(tftp_error) => {
+                eprintln!("{datagram_stream}: {request} denied: {tftp_error}");
+                fire_error(tftp_error, &datagram_stream, &mut buffer).await;
+                continue;
+            }
+        };
+        eprintln!("{datagram_stream}: Opened {opened_file} ({request})");
+        let handle = tokio::task::spawn_local(async {
+            if let Some((window, ack_timeout)) = negotiate_options(
+                &datagram_stream,
+                &mut opened_file,
+                &mut buffer,
+                request.options,
+            )
+            .await
+            {
+                match send_file(
+                    opened_file,
+                    &datagram_stream,
+                    window,
+                    ack_timeout,
+                    &mut buffer,
+                )
+                .await
+                {
+                    Ok((sent_bytes, sent_blocks)) => {
+                        eprintln!(
+                            "{datagram_stream}: Sent {sent_bytes} bytes, {sent_blocks} blocks"
+                        )
+                    }
+                    Err(tftp_error) => fire_error(tftp_error, &datagram_stream, &mut buffer).await,
+                };
+                drop(buffer);
+                drop(datagram_stream);
+            }
+        });
+        send_sessions.insert(peer_port, handle);
     }
     rx_channel.close();
     if !send_sessions.is_empty() {
