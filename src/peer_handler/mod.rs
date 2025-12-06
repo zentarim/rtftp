@@ -310,13 +310,13 @@ async fn peer_requests_handler(
                     .unwrap_or_else(|_| {
                         panic!("Can't bind to address {local_address} to random port")
                     });
-                let udp_stream =
+                let datagram_stream =
                     DatagramStream::new(local_socket, SocketAddr::new(peer, peer_port));
                 if let Err(error) = handle_request(
                     request,
                     &mut send_sessions,
                     &mut available_roots,
-                    udp_stream,
+                    datagram_stream,
                 )
                 .await
                 {
