@@ -312,18 +312,18 @@ async fn peer_requests_handler(
                     });
                 let datagram_stream =
                     DatagramStream::new(local_socket, SocketAddr::new(peer, peer_port));
-                if let Err(error) = handle_request(
-                    request,
-                    &mut send_sessions,
-                    &mut available_roots,
-                    datagram_stream,
-                )
-                .await
+                let mut send_buffer: Vec<u8> = vec![0; u16::MAX as usize];
+                send_sessions.retain(|_peer_port, handle| !handle.is_finished());
+                if send_sessions.len() >= send_sessions.capacity() {
+                    let error_message = "Maximum sessions per IP exceeded";
+                    eprintln!("{peer}: {error_message}");
+                    let tftp_error = TFTPError::new(error_message, UNDEFINED_ERROR);
+                    fire_error(tftp_error, &datagram_stream, &mut send_buffer).await;
+                };
+                if let Some(handle) =
+                    handle_request(request, &mut available_roots, datagram_stream).await
                 {
-                    eprintln!(
-                        "{peer}: Irrecoverable error occurred: {error}. A handler will be closed"
-                    );
-                    break;
+                    send_sessions.insert(peer_port, handle);
                 };
             }
             Ok(None) => {
@@ -354,60 +354,46 @@ async fn peer_requests_handler(
 
 async fn handle_request(
     read_request: ReadRequest,
-    send_sessions: &mut HashMap<u16, JoinHandle<()>>,
     available_roots: &mut [Box<dyn Root>],
     datagram_stream: DatagramStream,
-) -> Result<(), IrrecoverableError> {
+) -> Option<JoinHandle<()>> {
     let mut send_buffer: Vec<u8> = vec![0; u16::MAX as usize];
-    send_sessions.retain(|_peer_port, handle| !handle.is_finished());
-    if send_sessions.len() >= send_sessions.capacity() {
-        let error_message = "Maximum sessions per IP exceeded";
-        let tftp_error = TFTPError::new(error_message, UNDEFINED_ERROR);
-        fire_error(tftp_error, &datagram_stream, &mut send_buffer).await;
-        return Err(IrrecoverableError(error_message.to_owned()));
-    };
     let mut opened_file = match open_file(&read_request, available_roots) {
         Ok(file) => file,
         Err(tftp_error) => {
             eprintln!("{datagram_stream}: {read_request} denied: {tftp_error}");
             fire_error(tftp_error, &datagram_stream, &mut send_buffer).await;
-            return Ok(());
+            return None;
         }
     };
     eprintln!("{datagram_stream}: Opened {opened_file} ({read_request})");
-    send_sessions.insert(
-        datagram_stream.remote_port(),
-        tokio::task::spawn_local(async {
-            if let Some((window, ack_timeout)) = negotiate_options(
+    Some(tokio::task::spawn_local(async {
+        if let Some((window, ack_timeout)) = negotiate_options(
+            &datagram_stream,
+            &mut opened_file,
+            &mut send_buffer,
+            read_request.options,
+        )
+        .await
+        {
+            match send_file(
+                opened_file,
                 &datagram_stream,
-                &mut opened_file,
+                window,
+                ack_timeout,
                 &mut send_buffer,
-                read_request.options,
             )
             .await
             {
-                match send_file(
-                    opened_file,
-                    &datagram_stream,
-                    window,
-                    ack_timeout,
-                    &mut send_buffer,
-                )
-                .await
-                {
-                    Ok((sent_bytes, sent_blocks)) => eprintln!(
-                        "{datagram_stream}: Sent {sent_bytes} bytes, {sent_blocks} blocks"
-                    ),
-                    Err(tftp_error) => {
-                        fire_error(tftp_error, &datagram_stream, &mut send_buffer).await
-                    }
-                };
-                drop(send_buffer);
-                drop(datagram_stream);
-            }
-        }),
-    );
-    Ok(())
+                Ok((sent_bytes, sent_blocks)) => {
+                    eprintln!("{datagram_stream}: Sent {sent_bytes} bytes, {sent_blocks} blocks")
+                }
+                Err(tftp_error) => fire_error(tftp_error, &datagram_stream, &mut send_buffer).await,
+            };
+            drop(send_buffer);
+            drop(datagram_stream);
+        }
+    }))
 }
 
 fn get_available_remote_roots(tftp_root: &PathBuf, ip: &str) -> Vec<Box<dyn Root>> {
@@ -634,13 +620,4 @@ fn open_file(
         }
     }
     Err(TFTPError::new("File not found", FILE_NOT_FOUND))
-}
-
-#[derive(Debug)]
-struct IrrecoverableError(String);
-
-impl Display for IrrecoverableError {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(f, "IrrecoverableFSError: {}", self.0)
-    }
 }
