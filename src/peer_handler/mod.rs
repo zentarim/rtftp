@@ -323,7 +323,7 @@ async fn peer_requests_handler(
         };
         let local_socket = UdpSocket::bind(SocketAddr::new(local_address, 0))
             .await
-            .unwrap_or_else(|_| panic!("Can't bind to address {local_address} to random port"));
+            .unwrap_or_else(|err| panic!("Can't bind to address {local_address} to random port dues to {err}"));
         let datagram_stream = DatagramStream::new(local_socket, SocketAddr::new(peer, peer_port));
         let mut buffer: Vec<u8> = vec![0; u16::MAX as usize];
         send_sessions.retain(|_peer_port, handle| !handle.is_finished());
