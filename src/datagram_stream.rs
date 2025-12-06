@@ -25,10 +25,6 @@ impl DatagramStream {
         }
     }
 
-    pub(super) fn remote_port(&self) -> u16 {
-        self.peer_address.port()
-    }
-
     pub(super) async fn send(&self, buffer: &[u8]) -> std::io::Result<()> {
         match self.local_socket.send_to(buffer, self.peer_address).await {
             Ok(sent) => {
