@@ -1,5 +1,7 @@
 SHELL := /bin/bash
 CPU_CORES := $(shell nproc)
+MAX_TEST_THREADS := 10
+TEST_THREADS := $(shell echo $$(( $(CPU_CORES) < $(MAX_TEST_THREADS) ? $(CPU_CORES) : $(MAX_TEST_THREADS) )))
 .DEFAULT_GOAL := all
 
 all: lint test release
@@ -14,7 +16,7 @@ release:
 	cargo build --release
 
 test:
-	cargo test --release -- --test-threads ${CPU_CORES}
+	cargo test --release -- --test-threads ${TEST_THREADS}
 
 lint:
 	cargo clippy -- -D warnings
