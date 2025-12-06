@@ -319,11 +319,43 @@ async fn peer_requests_handler(
                     let tftp_error = TFTPError::new(error_message, UNDEFINED_ERROR);
                     fire_error(tftp_error, &datagram_stream, &mut buffer).await;
                 };
-                if let Some(handle) =
-                    handle_request(request, buffer, &available_roots, datagram_stream).await
-                {
-                    send_sessions.insert(peer_port, handle);
+                let mut opened_file = match open_file(&request, &available_roots) {
+                    Ok(file) => file,
+                    Err(tftp_error) => {
+                        eprintln!("{datagram_stream}: {request} denied: {tftp_error}");
+                        fire_error(tftp_error, &datagram_stream, &mut buffer).await;
+                        continue;
+                    }
                 };
+                eprintln!("{datagram_stream}: Opened {opened_file} ({request})");
+                let handle = tokio::task::spawn_local(async {
+                    if let Some((window, ack_timeout)) = negotiate_options(
+                        &datagram_stream,
+                        &mut opened_file,
+                        &mut buffer,
+                        request.options,
+                    )
+                        .await
+                    {
+                        match send_file(
+                            opened_file,
+                            &datagram_stream,
+                            window,
+                            ack_timeout,
+                            &mut buffer,
+                        )
+                            .await
+                        {
+                            Ok((sent_bytes, sent_blocks)) => {
+                                eprintln!("{datagram_stream}: Sent {sent_bytes} bytes, {sent_blocks} blocks")
+                            }
+                            Err(tftp_error) => fire_error(tftp_error, &datagram_stream, &mut buffer).await,
+                        };
+                        drop(buffer);
+                        drop(datagram_stream);
+                    }
+                });
+                send_sessions.insert(peer_port, handle);
             }
             Ok(None) => {
                 eprintln!("{peer}: Handler shutdown is requested");
@@ -349,50 +381,6 @@ async fn peer_requests_handler(
     for (_peer_port, handle) in send_sessions {
         _ = handle.await;
     }
-}
-
-async fn handle_request(
-    read_request: ReadRequest,
-    mut buffer: Vec<u8>,
-    available_roots: &[Box<dyn Root>],
-    datagram_stream: DatagramStream,
-) -> Option<JoinHandle<()>> {
-    let mut opened_file = match open_file(&read_request, available_roots) {
-        Ok(file) => file,
-        Err(tftp_error) => {
-            eprintln!("{datagram_stream}: {read_request} denied: {tftp_error}");
-            fire_error(tftp_error, &datagram_stream, &mut buffer).await;
-            return None;
-        }
-    };
-    eprintln!("{datagram_stream}: Opened {opened_file} ({read_request})");
-    Some(tokio::task::spawn_local(async {
-        if let Some((window, ack_timeout)) = negotiate_options(
-            &datagram_stream,
-            &mut opened_file,
-            &mut buffer,
-            read_request.options,
-        )
-        .await
-        {
-            match send_file(
-                opened_file,
-                &datagram_stream,
-                window,
-                ack_timeout,
-                &mut buffer,
-            )
-            .await
-            {
-                Ok((sent_bytes, sent_blocks)) => {
-                    eprintln!("{datagram_stream}: Sent {sent_bytes} bytes, {sent_blocks} blocks")
-                }
-                Err(tftp_error) => fire_error(tftp_error, &datagram_stream, &mut buffer).await,
-            };
-            drop(buffer);
-            drop(datagram_stream);
-        }
-    }))
 }
 
 fn get_available_remote_roots(tftp_root: &PathBuf, ip: &str) -> Vec<Box<dyn Root>> {
