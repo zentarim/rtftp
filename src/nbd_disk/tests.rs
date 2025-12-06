@@ -1,5 +1,6 @@
 use super::*;
 use crate::fs::{OpenedFile, Root};
+use crate::remote_fs::FileReader;
 use serde_json::json;
 use std::fs::File;
 use std::io::{BufRead, ErrorKind};
@@ -9,7 +10,7 @@ use std::{fs, io, thread, time};
 
 const DATA_PATTERN: &str = "ARBITRARY DATA";
 
-fn read_file(opened: &mut dyn OpenedFile) -> Vec<u8> {
+fn read_file(opened: &mut FileReader) -> Vec<u8> {
     let mut buffer = vec![];
     let mut chunk = vec![0u8; 512];
     loop {
@@ -290,7 +291,7 @@ fn read_existing_aligned_file() {
     let file = "aligned.file";
     let mut opened = chroot.open(file).unwrap();
     let expected_data = make_payload(opened.get_size().unwrap());
-    let read_data = read_file(opened.as_mut());
+    let read_data = read_file(&mut opened);
     assert_eq!(read_data, expected_data);
 }
 
@@ -307,7 +308,7 @@ fn read_existing_nonaligned_file() {
     let file = "nonaligned.file";
     let mut opened = chroot.open(file).unwrap();
     let expected_data = make_payload(opened.get_size().unwrap());
-    let read_data = read_file(opened.as_mut());
+    let read_data = read_file(&mut opened);
     assert_eq!(read_data, expected_data);
 }
 

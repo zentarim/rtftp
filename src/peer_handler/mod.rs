@@ -1,13 +1,14 @@
 use crate::cursor::ReadCursor;
 use crate::datagram_stream::DatagramStream;
-use crate::error::TFTPError;
-use crate::fs::{OpenedFile, Root};
+use crate::error::{ERROR, TFTPError};
+use crate::fs::{OpenedFile, RootKind};
 use crate::local_fs::LocalRoot;
 use crate::messages::{OptionsAcknowledge, ReadRequest};
 use crate::nbd_disk::NBDConfig;
 use crate::options::{AckTimeout, Blksize, TSize, WindowSize};
 use crate::remote_fs::{Config, RemoteRoot, VirtualRootError};
 use serde_json::Value;
+use std::borrow::Borrow;
 use std::collections::HashMap;
 use std::fmt::{Debug, Display, Formatter};
 use std::io;
@@ -28,22 +29,26 @@ mod tests;
 
 const ACK: u16 = 0x04;
 const DATA: u16 = 0x03;
-const ERROR: u16 = 0x05;
 const MAX_SESSIONS_PER_IP: usize = 128;
-
 const SEND_ATTEMPTS: u16 = 5;
 
-async fn fire_error(error: TFTPError, datagram_stream: &DatagramStream, buffer: &mut [u8]) {
-    match error.serialize(buffer) {
+async fn fire_error<D: Borrow<DatagramStream>>(
+    error: TFTPError,
+    datagram_stream: D,
+    mut buffer: impl AsMut<[u8]>,
+) {
+    let borrowed_stream = datagram_stream.borrow();
+    let borrowed_buffer = buffer.as_mut();
+    match error.serialize(borrowed_buffer) {
         Ok(to_send) => {
-            if let Err(send_error) = datagram_stream.send(&buffer[..to_send]).await {
-                eprintln!("{datagram_stream}: Error sending {error}: {send_error}");
+            if let Err(send_error) = borrowed_stream.send(&borrowed_buffer[..to_send]).await {
+                eprintln!("{borrowed_stream}: Error sending {error}: {send_error}");
             } else {
-                eprintln!("{datagram_stream}: Sent {error}");
+                eprintln!("{borrowed_stream}: Sent {error}");
             }
         }
         Err(buffer_error) => {
-            eprintln!("{datagram_stream}: Error serializing {error}: {buffer_error}")
+            eprintln!("{borrowed_stream}: Error serializing {error}: {buffer_error}")
         }
     }
 }
@@ -95,8 +100,8 @@ impl Window {
     }
 }
 
-async fn send_file(
-    mut opened_file: Box<dyn OpenedFile>,
+async fn send_file<O: OpenedFile>(
+    mut opened_file: O,
     datagram_stream: &DatagramStream,
     mut window: Window,
     ack_timeout: AckTimeout,
@@ -113,8 +118,7 @@ async fn send_file(
         let mut to_send = unacknowledged_count;
         while to_send < window.size() {
             last_read_index = last_read_index.wrapping_add(1);
-            if let Ok((read_bytes, is_last)) =
-                window.push_block(opened_file.as_mut(), last_read_index)
+            if let Ok((read_bytes, is_last)) = window.push_block(&mut opened_file, last_read_index)
             {
                 to_send += 1;
                 bytes_sent += read_bytes;
@@ -234,19 +238,19 @@ impl PeerHandler {
         let handle = Builder::new()
             .name(format!("Handler {peer}"))
             .spawn(move || {
-                let mut available_roots: Vec<Box<dyn Root>> =
-                    vec![Box::new(LocalRoot::new(tftp_root.join(peer.to_string())))];
-                if let Some(nbd_root) = open_nbd_root(&tftp_root, &peer.to_string()) {
-                    available_roots.push(Box::new(nbd_root))
-                }
-                available_roots.push(Box::new(LocalRoot::new(tftp_root.join("default"))));
-                eprintln!("{peer}: Available roots: {available_roots:?}");
                 let runtime = runtime::Builder::new_current_thread()
                     .enable_time()
                     .enable_io()
                     .build()
                     .unwrap();
                 let local_task_set = LocalSet::new();
+                let mut available_roots = vec![RootKind::Local(LocalRoot::new(
+                    tftp_root.join(peer.to_string()),
+                ))];
+                if let Some(remote_root) = open_nbd_root(&tftp_root, &peer.to_string()) {
+                    available_roots.push(RootKind::Remote(remote_root))
+                }
+                available_roots.push(RootKind::Local(LocalRoot::new(tftp_root.join("default"))));
                 local_task_set.spawn_local(peer_requests_handler(
                     peer,
                     local_address,
@@ -286,7 +290,7 @@ impl PeerHandler {
 async fn peer_requests_handler(
     peer: IpAddr,
     local_address: IpAddr,
-    available_roots: Vec<Box<dyn Root>>,
+    available_roots: Vec<RootKind>,
     mut rx_channel: Receiver<(u16, ReadRequest)>,
     idle_timeout: Duration,
 ) {
@@ -332,45 +336,10 @@ async fn peer_requests_handler(
             let tftp_error = TFTPError::undefined(error_message);
             fire_error(tftp_error, &datagram_stream, &mut buffer).await;
         };
-        let mut opened_file = match open_file(&request, &available_roots) {
-            Ok(file) => file,
-            Err(tftp_error) => {
-                eprintln!("{datagram_stream}: {request} denied: {tftp_error}");
-                fire_error(tftp_error, &datagram_stream, &mut buffer).await;
-                continue;
-            }
-        };
-        eprintln!("{datagram_stream}: Opened {opened_file} ({request})");
-        let handle = tokio::task::spawn_local(async {
-            if let Some((window, ack_timeout)) = negotiate_options(
-                &datagram_stream,
-                &mut opened_file,
-                &mut buffer,
-                request.options,
-            )
-            .await
-            {
-                match send_file(
-                    opened_file,
-                    &datagram_stream,
-                    window,
-                    ack_timeout,
-                    &mut buffer,
-                )
-                .await
-                {
-                    Ok((sent_bytes, sent_blocks)) => {
-                        eprintln!(
-                            "{datagram_stream}: Sent {sent_bytes} bytes, {sent_blocks} blocks"
-                        )
-                    }
-                    Err(tftp_error) => fire_error(tftp_error, &datagram_stream, &mut buffer).await,
-                };
-                drop(buffer);
-                drop(datagram_stream);
-            }
-        });
-        send_sessions.insert(peer_port, handle);
+        send_sessions.insert(
+            peer_port,
+            schedule_task(request, datagram_stream, &available_roots, buffer),
+        );
     }
     rx_channel.close();
     if !send_sessions.is_empty() {
@@ -378,6 +347,92 @@ async fn peer_requests_handler(
     }
     for (_peer_port, handle) in send_sessions {
         _ = handle.await;
+    }
+}
+
+fn schedule_task(
+    request: ReadRequest,
+    datagram_stream: DatagramStream,
+    available_roots: &[RootKind],
+    buffer: Vec<u8>,
+) -> JoinHandle<()> {
+    'done: {
+        for root in available_roots {
+            let error = match root {
+                RootKind::Local(local_root) => match request.open_in(local_root) {
+                    Ok(opened_local_file) => {
+                        break 'done tokio::task::spawn_local(send(
+                            opened_local_file,
+                            datagram_stream,
+                            request.options,
+                            buffer,
+                        ));
+                    }
+                    Err(err) => err,
+                },
+                RootKind::Remote(remote_root) => match request.open_in(remote_root) {
+                    Ok(opened_local_file) => {
+                        break 'done tokio::task::spawn_local(send(
+                            opened_local_file,
+                            datagram_stream,
+                            request.options,
+                            buffer,
+                        ));
+                    }
+                    Err(err) => err,
+                },
+            };
+            match error.kind() {
+                io::ErrorKind::NotFound => continue,
+                io::ErrorKind::PermissionDenied => {
+                    break 'done tokio::task::spawn_local(fire_error(
+                        TFTPError::access_violation(),
+                        datagram_stream,
+                        buffer,
+                    ));
+                }
+                _error => {
+                    break 'done tokio::task::spawn_local(fire_error(
+                        TFTPError::undefined("Server Error"),
+                        datagram_stream,
+                        buffer,
+                    ));
+                }
+            }
+        }
+        tokio::task::spawn_local(fire_error(
+            TFTPError::file_not_found(),
+            datagram_stream,
+            buffer,
+        ))
+    }
+}
+
+async fn send<O: OpenedFile>(
+    mut opened_file: O,
+    datagram_stream: DatagramStream,
+    options: HashMap<String, String>,
+    mut buffer: Vec<u8>,
+) {
+    if let Some((window, ack_timeout)) =
+        negotiate_options(&datagram_stream, &mut opened_file, &mut buffer, &options).await
+    {
+        match send_file(
+            opened_file,
+            &datagram_stream,
+            window,
+            ack_timeout,
+            &mut buffer,
+        )
+        .await
+        {
+            Ok((sent_bytes, sent_blocks)) => {
+                eprintln!("{datagram_stream}: Sent {sent_bytes} bytes, {sent_blocks} blocks")
+            }
+            Err(tftp_error) => fire_error(tftp_error, &datagram_stream, &mut buffer).await,
+        };
+        drop(buffer);
+        drop(datagram_stream);
     }
 }
 
@@ -539,15 +594,15 @@ async fn send_oack_reliably(
     ))
 }
 
-async fn negotiate_options(
+async fn negotiate_options<O: OpenedFile>(
     datagram_stream: &DatagramStream,
-    opened_file: &mut Box<dyn OpenedFile>,
+    opened_file: &mut O,
     buffer: &mut [u8],
-    options: HashMap<String, String>,
+    options: &HashMap<String, String>,
 ) -> Option<(Window, AckTimeout)> {
     let mut oack = OptionsAcknowledge::new();
     let ack_timeout = {
-        if let Some(timeout) = AckTimeout::find_in(&options) {
+        if let Some(timeout) = AckTimeout::find_in(options) {
             oack.push(timeout.as_key_pair());
             timeout
         } else {
@@ -555,15 +610,15 @@ async fn negotiate_options(
         }
     };
     let block_size = {
-        if let Some(block_size) = Blksize::find_in(&options) {
+        if let Some(block_size) = Blksize::find_in(options) {
             oack.push(block_size.as_key_pair());
             block_size
         } else {
             Default::default()
         }
     };
-    if TSize::is_requested(&options) {
-        match TSize::obtain(opened_file.as_mut()) {
+    if TSize::is_requested(options) {
+        match TSize::obtain(opened_file) {
             Ok(tsize) => oack.push(tsize.as_key_pair()),
             Err(err) => {
                 eprintln!("{datagram_stream}: Can't obtain TSize due to {err:?}")
@@ -571,7 +626,7 @@ async fn negotiate_options(
         }
     };
     let window_size = {
-        if let Some(window_size) = WindowSize::find_in(&options) {
+        if let Some(window_size) = WindowSize::find_in(options) {
             oack.push(window_size.as_key_pair());
             window_size
         } else {
@@ -587,21 +642,4 @@ async fn negotiate_options(
     };
     let window = Window::new(block_size.get_size() as u16, window_size.get_size() as u16);
     Some((window, ack_timeout))
-}
-
-fn open_file(
-    read_request: &ReadRequest,
-    roots: &[Box<dyn Root>],
-) -> Result<Box<dyn OpenedFile>, TFTPError> {
-    for remote_root in roots {
-        match read_request.open_in(remote_root.as_ref()) {
-            Ok(file) => return Ok(file),
-            Err(err) if err.kind() == io::ErrorKind::NotFound => continue,
-            Err(err) if err.kind() == io::ErrorKind::PermissionDenied => {
-                return Err(TFTPError::access_violation());
-            }
-            Err(_unknown_error) => return Err(TFTPError::undefined("Server Error")),
-        }
-    }
-    Err(TFTPError::file_not_found())
 }

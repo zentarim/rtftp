@@ -153,7 +153,7 @@ async fn send_aligned_data() {
     let window = Window::new(block_size, window_size);
     let mut buffer = vec![0; 1024];
     let send_coro = send_file(
-        Box::new(opened_file),
+        opened_file,
         &server_stream,
         window,
         ack_timeout,
@@ -174,7 +174,7 @@ async fn send_unaligned_data() {
     let window = Window::new(block_size, window_size);
     let mut buffer = vec![0; 1024];
     let send_coro = send_file(
-        Box::new(opened_file),
+        opened_file,
         &server_stream,
         window,
         ack_timeout,
@@ -195,7 +195,7 @@ async fn send_aligned_data_windowed() {
     let window = Window::new(block_size, window_size);
     let mut buffer = vec![0; 1024];
     let send_coro = send_file(
-        Box::new(opened_file),
+        opened_file,
         &server_stream,
         window,
         ack_timeout,
@@ -216,7 +216,7 @@ async fn send_unaligned_data_windowed() {
     let window = Window::new(block_size, window_size);
     let mut buffer = vec![0; 1024];
     let send_coro = send_file(
-        Box::new(opened_file),
+        opened_file,
         &server_stream,
         window,
         ack_timeout,

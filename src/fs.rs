@@ -1,3 +1,5 @@
+use crate::local_fs::LocalRoot;
+use crate::remote_fs::RemoteRoot;
 use std::fmt::{Debug, Display};
 use std::io;
 
@@ -8,5 +10,11 @@ pub(super) trait OpenedFile: Display + Debug {
 }
 
 pub(super) trait Root: Display + Debug {
-    fn open(&self, path: &str) -> io::Result<Box<dyn OpenedFile>>;
+    type OpenedFile: OpenedFile;
+    fn open(&self, path: &str) -> io::Result<Self::OpenedFile>;
+}
+
+pub(super) enum RootKind {
+    Local(LocalRoot),
+    Remote(RemoteRoot),
 }

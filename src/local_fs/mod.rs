@@ -8,7 +8,7 @@ use std::path::PathBuf;
 #[cfg(test)]
 mod tests;
 
-struct LocalOpenedFile {
+pub(super) struct LocalOpenedFile {
     rd: File,
     display: String,
 }
@@ -50,17 +50,18 @@ impl LocalRoot {
 }
 
 impl Root for LocalRoot {
-    fn open(&self, path: &str) -> io::Result<Box<dyn OpenedFile>> {
+    type OpenedFile = LocalOpenedFile;
+    fn open(&self, path: &str) -> io::Result<Self::OpenedFile> {
         let file_path = self.path.join(path.trim_start_matches('/'));
         let printable_path = file_path.display().to_string();
         if !file_path.starts_with(&self.path) {
             return Err(io::ErrorKind::PermissionDenied.into());
         }
         let result = OpenOptions::new().read(true).open(&file_path)?;
-        Ok(Box::new(LocalOpenedFile {
+        Ok(LocalOpenedFile {
             rd: result,
             display: printable_path,
-        }))
+        })
     }
 }
 
