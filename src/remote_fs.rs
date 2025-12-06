@@ -22,7 +22,8 @@ impl RemoteRoot {
 }
 
 impl Root for RemoteRoot {
-    fn open(&self, path: &str) -> io::Result<Box<dyn OpenedFile>> {
+    type OpenedFile = FileReader;
+    fn open(&self, path: &str) -> io::Result<Self::OpenedFile> {
         match self
             .disk
             .open(self.chroot_path.join(path).to_str().unwrap())
@@ -253,7 +254,7 @@ impl ConnectedDisk {
         Ok(result)
     }
 
-    pub(super) fn open(&self, absolute_path: &str) -> io::Result<Box<dyn OpenedFile>> {
+    pub(super) fn open(&self, absolute_path: &str) -> io::Result<FileReader> {
         let file_size = match self.handle.get_size(absolute_path) {
             Ok(file_size) => file_size,
             Err(guestfs_error) => {
@@ -274,7 +275,7 @@ impl ConnectedDisk {
             file_size,
             display,
         ) {
-            Ok(file_reader) => Ok(Box::new(file_reader)),
+            Ok(file_reader) => Ok(file_reader),
             Err(guestfs_error) => Err(io::Error::other(guestfs_error)),
         }
     }

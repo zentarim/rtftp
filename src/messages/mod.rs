@@ -68,7 +68,10 @@ impl ReadRequest {
         }
         Ok(ReadRequest { filename, options })
     }
-    pub(super) fn open_in(&self, filesystem: &dyn Root) -> io::Result<Box<dyn OpenedFile>> {
+    pub(super) fn open_in<O: OpenedFile>(
+        &self,
+        filesystem: &impl Root<OpenedFile = O>,
+    ) -> io::Result<O> {
         let normalized_path = self.filename.trim_start_matches('/');
         eprintln!("Opening {normalized_path} in {filesystem} ...");
         filesystem.open(normalized_path)
