@@ -312,16 +312,16 @@ async fn peer_requests_handler(
                     });
                 let datagram_stream =
                     DatagramStream::new(local_socket, SocketAddr::new(peer, peer_port));
-                let mut send_buffer: Vec<u8> = vec![0; u16::MAX as usize];
+                let mut buffer: Vec<u8> = vec![0; u16::MAX as usize];
                 send_sessions.retain(|_peer_port, handle| !handle.is_finished());
                 if send_sessions.len() >= send_sessions.capacity() {
                     let error_message = "Maximum sessions per IP exceeded";
                     eprintln!("{peer}: {error_message}");
                     let tftp_error = TFTPError::new(error_message, UNDEFINED_ERROR);
-                    fire_error(tftp_error, &datagram_stream, &mut send_buffer).await;
+                    fire_error(tftp_error, &datagram_stream, &mut buffer).await;
                 };
                 if let Some(handle) =
-                    handle_request(request, &mut available_roots, datagram_stream).await
+                    handle_request(request, buffer, &mut available_roots, datagram_stream).await
                 {
                     send_sessions.insert(peer_port, handle);
                 };
@@ -354,15 +354,15 @@ async fn peer_requests_handler(
 
 async fn handle_request(
     read_request: ReadRequest,
+    mut buffer: Vec<u8>,
     available_roots: &mut [Box<dyn Root>],
     datagram_stream: DatagramStream,
 ) -> Option<JoinHandle<()>> {
-    let mut send_buffer: Vec<u8> = vec![0; u16::MAX as usize];
     let mut opened_file = match open_file(&read_request, available_roots) {
         Ok(file) => file,
         Err(tftp_error) => {
             eprintln!("{datagram_stream}: {read_request} denied: {tftp_error}");
-            fire_error(tftp_error, &datagram_stream, &mut send_buffer).await;
+            fire_error(tftp_error, &datagram_stream, &mut buffer).await;
             return None;
         }
     };
@@ -371,7 +371,7 @@ async fn handle_request(
         if let Some((window, ack_timeout)) = negotiate_options(
             &datagram_stream,
             &mut opened_file,
-            &mut send_buffer,
+            &mut buffer,
             read_request.options,
         )
         .await
@@ -381,16 +381,16 @@ async fn handle_request(
                 &datagram_stream,
                 window,
                 ack_timeout,
-                &mut send_buffer,
+                &mut buffer,
             )
             .await
             {
                 Ok((sent_bytes, sent_blocks)) => {
                     eprintln!("{datagram_stream}: Sent {sent_bytes} bytes, {sent_blocks} blocks")
                 }
-                Err(tftp_error) => fire_error(tftp_error, &datagram_stream, &mut send_buffer).await,
+                Err(tftp_error) => fire_error(tftp_error, &datagram_stream, &mut buffer).await,
             };
-            drop(send_buffer);
+            drop(buffer);
             drop(datagram_stream);
         }
     }))
