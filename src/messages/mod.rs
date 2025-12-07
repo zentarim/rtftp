@@ -1,4 +1,5 @@
 use crate::cursor::{BufferError, ReadCursor, WriteCursor};
+use crate::error::TFTPError;
 use crate::fs::{OpenedFile, Root};
 use std::collections::HashMap;
 use std::fmt::{Debug, Display};
@@ -8,46 +9,8 @@ use std::{fmt, io};
 mod tests;
 
 const RRQ: u16 = 0x01;
-const ERROR: u16 = 0x05;
 const OACK: u16 = 0x06;
-pub(super) const UNDEFINED_ERROR: u16 = 0x00;
-
-pub(super) const ILLEGAL_OPERATION: u16 = 0x04;
 static OCTET: &str = "octet";
-
-#[derive(Debug)]
-pub(super) struct TFTPError {
-    message: String,
-    error_code: u16,
-}
-
-impl TFTPError {
-    pub(super) fn new<M: Into<String>>(message: M, error_code: u16) -> Self {
-        Self {
-            message: message.into(),
-            error_code,
-        }
-    }
-
-    pub(super) fn serialize(&self, buffer: &mut [u8]) -> Result<usize, BufferError> {
-        let mut cursor = WriteCursor::new(buffer);
-        cursor.put_ushort(ERROR)?;
-        cursor.put_ushort(self.error_code)?;
-        cursor.put_string(self.message.as_str())
-    }
-}
-
-impl Display for TFTPError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "TFTP ERROR: [0x{:02x}] {}",
-            self.error_code, self.message
-        )
-    }
-}
-
-impl std::error::Error for TFTPError {}
 
 pub(super) struct ReadRequest {
     filename: String,
@@ -71,25 +34,22 @@ impl ReadRequest {
         let mut cursor = ReadCursor::new(raw);
         let opcode = cursor
             .extract_ushort()
-            .map_err(|_| TFTPError::new("Bad format", UNDEFINED_ERROR))?;
+            .map_err(|_| TFTPError::undefined("Bad format"))?;
         if opcode != RRQ {
-            return Err(TFTPError::new("Only RRQ is supported", ILLEGAL_OPERATION));
+            return Err(TFTPError::illegal_operation("Only RRQ is supported"));
         }
         let filename = cursor
             .extract_string()
-            .map_err(|_| TFTPError::new("Can't obtain filename", UNDEFINED_ERROR))?;
+            .map_err(|_| TFTPError::undefined("Can't obtain filename"))?;
         if let Ok(mode) = cursor.extract_string() {
             if mode != OCTET {
                 if mode.is_empty() {
-                    return Err(TFTPError::new("Bad format", UNDEFINED_ERROR));
+                    return Err(TFTPError::undefined("Bad format"));
                 }
-                return Err(TFTPError::new(
-                    "Only octet mode is supported",
-                    UNDEFINED_ERROR,
-                ));
+                return Err(TFTPError::undefined("Only octet mode is supported"));
             }
         } else {
-            return Err(TFTPError::new("Bad format", UNDEFINED_ERROR));
+            return Err(TFTPError::undefined("Bad format"));
         }
         let mut options: HashMap<String, String> = HashMap::new();
         loop {
@@ -97,12 +57,12 @@ impl ReadRequest {
                 Ok(name) => name,
                 Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => break,
                 Err(_error) => {
-                    return Err(TFTPError::new("Bad format", UNDEFINED_ERROR));
+                    return Err(TFTPError::undefined("Bad format"));
                 }
             };
             let option_value = match cursor.extract_string() {
                 Ok(name) => name,
-                Err(_) => return Err(TFTPError::new("Bad format", UNDEFINED_ERROR)),
+                Err(_) => return Err(TFTPError::undefined("Bad format")),
             };
             options.insert(option_name, option_value);
         }

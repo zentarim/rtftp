@@ -4,6 +4,7 @@ compile_error!(
 );
 mod cursor;
 mod datagram_stream;
+mod error;
 mod fs;
 mod fs_watch;
 mod guestfs;
