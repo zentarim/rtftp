@@ -6,7 +6,7 @@ use crate::local_fs::LocalRoot;
 use crate::messages::{OptionsAcknowledge, ReadRequest};
 use crate::nbd_disk::NBDConfig;
 use crate::options::{AckTimeout, Blksize, TSize, WindowSize};
-use crate::remote_fs::{Config, VirtualRootError};
+use crate::remote_fs::{Config, RemoteRoot, VirtualRootError};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::fmt::{Debug, Display, Formatter};
@@ -236,7 +236,9 @@ impl PeerHandler {
             .spawn(move || {
                 let mut available_roots: Vec<Box<dyn Root>> =
                     vec![Box::new(LocalRoot::new(tftp_root.join(peer.to_string())))];
-                available_roots.extend(get_available_remote_roots(&tftp_root, &peer.to_string()));
+                if let Some(nbd_root) = open_nbd_root(&tftp_root, &peer.to_string()) {
+                    available_roots.push(Box::new(nbd_root))
+                }
                 available_roots.push(Box::new(LocalRoot::new(tftp_root.join("default"))));
                 eprintln!("{peer}: Available roots: {available_roots:?}");
                 let runtime = runtime::Builder::new_current_thread()
@@ -379,8 +381,7 @@ async fn peer_requests_handler(
     }
 }
 
-fn get_available_remote_roots(tftp_root: &PathBuf, ip: &str) -> Vec<Box<dyn Root>> {
-    let mut result: Vec<Box<dyn Root>> = Vec::new();
+fn open_nbd_root(tftp_root: &PathBuf, ip: &str) -> Option<RemoteRoot> {
     eprintln!("Looking for TFTP root configs in {tftp_root:?} ...");
     for file_path in files_sorted(tftp_root) {
         if match_ip(&file_path, ip) {
@@ -392,7 +393,7 @@ fn get_available_remote_roots(tftp_root: &PathBuf, ip: &str) -> Vec<Box<dyn Root
                     match nbd_config.connect() {
                         Ok(disk) => {
                             eprintln!("Connected config {file_path:?}");
-                            result.push(Box::new(disk));
+                            return Some(disk);
                         }
                         Err(VirtualRootError::ConfigError(error)) => {
                             eprintln!("Invalid config {file_path:?}: {error}");
@@ -407,7 +408,7 @@ fn get_available_remote_roots(tftp_root: &PathBuf, ip: &str) -> Vec<Box<dyn Root
             }
         }
     }
-    result
+    None
 }
 
 fn files_sorted<P: AsRef<Path>>(parent: P) -> Vec<PathBuf> {
