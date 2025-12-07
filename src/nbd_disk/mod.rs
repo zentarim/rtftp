@@ -3,6 +3,8 @@ use crate::remote_fs::{Config, ConnectedDisk, Mount, RemoteRoot, VirtualRootErro
 use serde::Deserialize;
 use serde_json::{Value, from_value};
 use std::fmt::Debug;
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 #[cfg(test)]
@@ -88,4 +90,69 @@ impl<'a> Config<'a> for NBDConfig {
         }
         Ok(RemoteRoot::new(disk, &self.tftp_root))
     }
+}
+
+pub(super) fn open_nbd_root(tftp_root: &PathBuf, ip: &str) -> Option<RemoteRoot> {
+    eprintln!("Looking for TFTP root configs in {tftp_root:?} ...");
+    for file_path in files_sorted(tftp_root) {
+        if match_ip(&file_path, ip) {
+            eprintln!("Found TFTP root config {file_path:?}");
+            if let Some(json_struct) = read_json(&file_path) {
+                eprintln!("Found JSON file {file_path:?}");
+                if let Some(nbd_config) = NBDConfig::from_json(&json_struct) {
+                    eprintln!("Found NBD TFTP root config {file_path:?}");
+                    match nbd_config.connect() {
+                        Ok(disk) => {
+                            eprintln!("Connected config {file_path:?}");
+                            return Some(disk);
+                        }
+                        Err(VirtualRootError::ConfigError(error)) => {
+                            eprintln!("Invalid config {file_path:?}: {error}");
+                        }
+                        Err(VirtualRootError::SetupError(error)) => {
+                            eprintln!(
+                                "Failed to connect disk using config {file_path:?}: {error:?}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+fn files_sorted<P: AsRef<Path>>(parent: P) -> Vec<PathBuf> {
+    let mut files = fs::read_dir(parent)
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| {
+            if let Ok(entry) = entry {
+                let path = entry.path();
+                if path.is_file() {
+                    return Some(path);
+                };
+            };
+            None
+        })
+        .collect::<Vec<_>>();
+    files.sort();
+    files
+}
+
+fn match_ip(path: &Path, ip: &str) -> bool {
+    if let Some(file_name) = path.file_name().and_then(|os| os.to_str()) {
+        file_name.starts_with(ip)
+    } else {
+        false
+    }
+}
+
+fn read_json(path: &Path) -> Option<Value> {
+    if let Ok(content) = fs::read_to_string(path)
+        && let Ok(json_struct) = serde_json::from_str::<Value>(&content)
+    {
+        return Some(json_struct);
+    }
+    None
 }
