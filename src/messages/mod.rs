@@ -14,7 +14,7 @@ static OCTET: &str = "octet";
 
 pub(super) struct ReadRequest {
     filename: String,
-    pub options: HashMap<String, String>,
+    options: HashMap<String, String>,
 }
 
 impl Display for ReadRequest {
@@ -75,6 +75,10 @@ impl ReadRequest {
         let normalized_path = self.filename.trim_start_matches('/');
         eprintln!("Opening {normalized_path} in {filesystem} ...");
         filesystem.open(normalized_path)
+    }
+
+    pub(super) fn yield_options(self) -> HashMap<String, String> {
+        self.options
     }
 }
 

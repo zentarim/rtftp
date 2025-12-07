@@ -364,7 +364,7 @@ fn schedule_task(
                         break 'done tokio::task::spawn_local(send(
                             opened_local_file,
                             datagram_stream,
-                            request.options,
+                            request.yield_options(),
                             buffer,
                         ));
                     }
@@ -375,7 +375,7 @@ fn schedule_task(
                         break 'done tokio::task::spawn_local(send(
                             opened_local_file,
                             datagram_stream,
-                            request.options,
+                            request.yield_options(),
                             buffer,
                         ));
                     }
