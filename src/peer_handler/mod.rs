@@ -1,8 +1,9 @@
 use crate::cursor::ReadCursor;
 use crate::datagram_stream::DatagramStream;
+use crate::error::TFTPError;
 use crate::fs::{OpenedFile, Root};
 use crate::local_fs::LocalRoot;
-use crate::messages::{OptionsAcknowledge, ReadRequest, TFTPError, UNDEFINED_ERROR};
+use crate::messages::{OptionsAcknowledge, ReadRequest};
 use crate::nbd_disk::NBDConfig;
 use crate::options::{AckTimeout, Blksize, TSize, WindowSize};
 use crate::remote_fs::{Config, VirtualRootError};
@@ -27,13 +28,7 @@ mod tests;
 
 const ACK: u16 = 0x04;
 const DATA: u16 = 0x03;
-
 const ERROR: u16 = 0x05;
-
-const FILE_NOT_FOUND: u16 = 0x01;
-
-const ACCESS_VIOLATION: u16 = 0x02;
-
 const MAX_SESSIONS_PER_IP: usize = 128;
 
 const SEND_ATTEMPTS: u16 = 5;
@@ -128,7 +123,7 @@ async fn send_file(
                     break;
                 }
             } else {
-                return Err(TFTPError::new("Read file error occurred", UNDEFINED_ERROR));
+                return Err(TFTPError::undefined("Read file error occurred"));
             }
         }
         debug_assert!(to_send <= window.size());
@@ -144,7 +139,7 @@ async fn send_file(
         {
             Ok(received_acknowledged) => received_acknowledged,
             Err(SendError::Timeout) => {
-                return Err(TFTPError::new("Send timeout occurred", UNDEFINED_ERROR));
+                return Err(TFTPError::undefined("Send timeout occurred"));
             }
             Err(SendError::ClientError(code, string)) => {
                 eprintln!("{datagram_stream}: Early termination [{code}] {string}");
@@ -152,7 +147,7 @@ async fn send_file(
                 return Ok((bytes_sent, blocks_sent));
             }
             Err(_) => {
-                return Err(TFTPError::new("Unknown error occurred", UNDEFINED_ERROR));
+                return Err(TFTPError::undefined("Unknown error occurred"));
             }
         };
     }
@@ -323,14 +318,16 @@ async fn peer_requests_handler(
         };
         let local_socket = UdpSocket::bind(SocketAddr::new(local_address, 0))
             .await
-            .unwrap_or_else(|err| panic!("Can't bind to address {local_address} to random port dues to {err}"));
+            .unwrap_or_else(|err| {
+                panic!("Can't bind to address {local_address} to random port dues to {err}")
+            });
         let datagram_stream = DatagramStream::new(local_socket, SocketAddr::new(peer, peer_port));
         let mut buffer: Vec<u8> = vec![0; u16::MAX as usize];
         send_sessions.retain(|_peer_port, handle| !handle.is_finished());
         if send_sessions.len() >= send_sessions.capacity() {
             let error_message = "Maximum sessions per IP exceeded";
             eprintln!("{peer}: {error_message}");
-            let tftp_error = TFTPError::new(error_message, UNDEFINED_ERROR);
+            let tftp_error = TFTPError::undefined(error_message);
             fire_error(tftp_error, &datagram_stream, &mut buffer).await;
         };
         let mut opened_file = match open_file(&request, &available_roots) {
@@ -468,7 +465,7 @@ async fn send_reliably(
         return match read_acknowledge(datagram_stream, buffer, ack_timeout).await {
             Ok(received_ack) if received_ack >= window_index => Ok(received_ack),
             Ok(unexpected_ack) => {
-                let tftp_error = TFTPError::new("Received ACK from the past", UNDEFINED_ERROR);
+                let tftp_error = TFTPError::undefined("Received ACK from the past");
                 eprintln!(
                     "{datagram_stream}: Received ACK {unexpected_ack} while expected > {window_index}"
                 );
@@ -501,7 +498,7 @@ async fn send_oack_reliably(
     let oack_size = match oack.serialize(buffer) {
         Ok(size) => size,
         Err(buffer_error) => {
-            let tftp_error = TFTPError::new("OACK build error", UNDEFINED_ERROR);
+            let tftp_error = TFTPError::undefined("OACK build error");
             fire_error(tftp_error, datagram_stream, buffer).await;
             return Err(io::Error::other(format!(
                 "Error building options: {buffer_error}"
@@ -513,7 +510,7 @@ async fn send_oack_reliably(
         match read_acknowledge(datagram_stream, buffer, ack_timeout).await {
             Ok(ack_num) if ack_num == oack_index => return Ok(()),
             Ok(ack_num) => {
-                let tftp_error = TFTPError::new("Unexpected non-zero ACK", UNDEFINED_ERROR);
+                let tftp_error = TFTPError::undefined("Unexpected non-zero ACK");
                 fire_error(tftp_error, datagram_stream, buffer).await;
                 return Err(io::Error::other(format!(
                     "Received unexpected ACK {ack_num} while expecting {oack_index}"
@@ -533,7 +530,7 @@ async fn send_oack_reliably(
             }
         }
     }
-    let tftp_error = TFTPError::new("Send timeout occurred", UNDEFINED_ERROR);
+    let tftp_error = TFTPError::undefined("Send timeout occurred");
     fire_error(tftp_error, datagram_stream, buffer).await;
     Err(io::Error::new(
         io::ErrorKind::TimedOut,
@@ -600,10 +597,10 @@ fn open_file(
             Ok(file) => return Ok(file),
             Err(err) if err.kind() == io::ErrorKind::NotFound => continue,
             Err(err) if err.kind() == io::ErrorKind::PermissionDenied => {
-                return Err(TFTPError::new("Access violation", ACCESS_VIOLATION));
+                return Err(TFTPError::access_violation());
             }
-            Err(_unknown_error) => return Err(TFTPError::new("Server Error", UNDEFINED_ERROR)),
+            Err(_unknown_error) => return Err(TFTPError::undefined("Server Error")),
         }
     }
-    Err(TFTPError::new("File not found", FILE_NOT_FOUND))
+    Err(TFTPError::file_not_found())
 }
