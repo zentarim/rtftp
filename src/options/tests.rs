@@ -31,7 +31,8 @@ fn find_timeout() {
 #[test]
 fn test_timeout_cap() {
     let mut options = HashMap::new();
-    options.insert(TIMEOUT.to_string(), (ACK_TIMEOUT_LIMIT + 1).to_string());
+    let upper_cap = ACK_TIMEOUT_UPPER_CAP + 1;
+    options.insert(TIMEOUT.to_string(), upper_cap.to_string());
     let find_result = AckTimeout::find_in(&options);
     assert!(find_result.is_none());
 }
@@ -39,7 +40,8 @@ fn test_timeout_cap() {
 #[test]
 fn test_timeout_bottom() {
     let mut options = HashMap::new();
-    options.insert(TIMEOUT.to_string(), 0.to_string());
+    let bottom_cap = ACK_TIMEOUT_BOTTOM_CAP - 1;
+    options.insert(TIMEOUT.to_string(), bottom_cap.to_string());
     let find_result = AckTimeout::find_in(&options);
     assert!(find_result.is_none());
 }
@@ -47,7 +49,8 @@ fn test_timeout_bottom() {
 #[test]
 fn test_block_size_bottom() {
     let mut options = HashMap::new();
-    options.insert(BLKSIZE.to_string(), 7.to_string());
+    let bottom_cap = BLOCK_SIZE_BOTTOM_CAP - 1;
+    options.insert(BLKSIZE.to_string(), bottom_cap.to_string());
     let find_result = Blksize::find_in(&options);
     assert!(find_result.is_none());
 }
@@ -55,7 +58,8 @@ fn test_block_size_bottom() {
 #[test]
 fn test_block_size_cap() {
     let mut options = HashMap::new();
-    options.insert(BLKSIZE.to_string(), (BLOCK_SIZE_LIMIT + 1).to_string());
+    let upper_cap = BLOCK_SIZE_UPPER_CAP + 1;
+    options.insert(BLKSIZE.to_string(), upper_cap.to_string());
     let find_result = Blksize::find_in(&options);
     assert!(find_result.is_none());
 }
@@ -71,7 +75,8 @@ fn test_window_size() {
 #[test]
 fn test_window_bottom() {
     let mut options = HashMap::new();
-    options.insert(WINDOW_SIZE.to_string(), 0.to_string());
+    let bottom_cap = WINDOW_SIZE_BOTTOM_CAP - 1;
+    options.insert(WINDOW_SIZE.to_string(), bottom_cap.to_string());
     let find_result = WindowSize::find_in(&options);
     assert!(find_result.is_none());
 }
@@ -79,7 +84,8 @@ fn test_window_bottom() {
 #[test]
 fn test_window_cap() {
     let mut options = HashMap::new();
-    options.insert(WINDOW_SIZE.to_string(), (WINDOW_SIZE_LIMIT + 1).to_string());
+    let upper_cap = WINDOW_SIZE_UPPER_CAP + 1;
+    options.insert(WINDOW_SIZE.to_string(), upper_cap.to_string());
     let find_result = WindowSize::find_in(&options);
     assert!(find_result.is_none());
 }
