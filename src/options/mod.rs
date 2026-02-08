@@ -16,11 +16,14 @@ static BLKSIZE: &str = "blksize";
 
 const WINDOW_SIZE: &str = "windowsize";
 
-const BLOCK_SIZE_LIMIT: usize = u16::MAX as usize;
+const BLOCK_SIZE_BOTTOM_CAP: usize = 8;
+const BLOCK_SIZE_UPPER_CAP: usize = u16::MAX as usize;
 
-const ACK_TIMEOUT_LIMIT: usize = 255;
+const ACK_TIMEOUT_BOTTOM_CAP: usize = 1;
+const ACK_TIMEOUT_UPPER_CAP: usize = 255;
 
-const WINDOW_SIZE_LIMIT: usize = u16::MAX as usize;
+const WINDOW_SIZE_BOTTOM_CAP: usize = 1;
+const WINDOW_SIZE_UPPER_CAP: usize = u16::MAX as usize;
 
 #[derive(Clone)]
 pub(super) struct Blksize {
@@ -32,10 +35,12 @@ impl Blksize {
         if let Some(block_size_string) = options.get(BLKSIZE)
             && let Ok(block_size) = block_size_string.parse::<usize>()
         {
-            if (8..=BLOCK_SIZE_LIMIT).contains(&block_size) {
+            if (BLOCK_SIZE_BOTTOM_CAP..=BLOCK_SIZE_UPPER_CAP).contains(&block_size) {
                 return Some(Self { block_size });
             } else {
-                eprintln!("Requested {block_size} doesn't fit in range 8 .. ={BLOCK_SIZE_LIMIT}");
+                eprintln!(
+                    "Requested {block_size} doesn't fit in range {BLOCK_SIZE_BOTTOM_CAP} .. ={BLOCK_SIZE_UPPER_CAP}"
+                );
             }
         }
         None
@@ -79,11 +84,11 @@ impl AckTimeout {
         if let Some(timeout_string) = options.get(TIMEOUT)
             && let Ok(timeout) = timeout_string.parse::<usize>()
         {
-            if (1..=ACK_TIMEOUT_LIMIT).contains(&timeout) {
+            if (ACK_TIMEOUT_BOTTOM_CAP..=ACK_TIMEOUT_UPPER_CAP).contains(&timeout) {
                 return Some(Self { timeout });
             } else {
                 eprintln!(
-                    "Requested timeout {timeout} doesn't fit in range 1 .. ={ACK_TIMEOUT_LIMIT}"
+                    "Requested timeout {timeout} doesn't fit in range {ACK_TIMEOUT_BOTTOM_CAP} .. ={ACK_TIMEOUT_UPPER_CAP}"
                 );
             }
         }
@@ -133,11 +138,11 @@ impl WindowSize {
         if let Some(window_size) = options.get(WINDOW_SIZE)
             && let Ok(window_size) = window_size.parse::<usize>()
         {
-            if (1..=WINDOW_SIZE_LIMIT).contains(&window_size) {
+            if (WINDOW_SIZE_BOTTOM_CAP..=WINDOW_SIZE_UPPER_CAP).contains(&window_size) {
                 return Some(Self(window_size));
             } else {
                 eprintln!(
-                    "Requested window size {window_size} doesn't fit in range 1 .. ={WINDOW_SIZE_LIMIT}"
+                    "Requested window size {window_size} doesn't fit in range {WINDOW_SIZE_BOTTOM_CAP} .. ={WINDOW_SIZE_UPPER_CAP}"
                 );
             }
         }
