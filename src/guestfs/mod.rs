@@ -1,6 +1,7 @@
 use std::error::Error;
 use std::ffi::{CStr, CString};
 use std::fmt::{Debug, Display, Formatter};
+use std::pin::Pin;
 use std::str::FromStr;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::{ptr, slice};
@@ -156,14 +157,15 @@ fn disable_signals_propagation(handle: &*const guestfs_h) -> Result<(), GuestFSE
 pub(super) struct GuestFS {
     handle: *const guestfs_h,
     events_receiver: Receiver<Vec<u8>>,
-    _events_sender: Box<Sender<Vec<u8>>>, // Ensure proper drop at the end of the structure's lifecycle.
+    _events_sender: Pin<Box<Sender<Vec<u8>>>>, // Ensure proper drop at the end of the structure's lifecycle.
 }
 
 impl GuestFS {
     pub(super) fn new() -> Self {
         let (sender, receiver) = channel::<Vec<u8>>();
-        let c_ptr = Box::into_raw(Box::new(sender));
-        let (handle, boxed_sender) = unsafe {
+        let pinned_sender = Box::pin(sender);
+        let sender_c_ptr = &*pinned_sender as *const Sender<Vec<u8>>;
+        let handle = unsafe {
             let handle = guestfs_create();
             guestfs_set_error_handler(handle, ptr::null(), ptr::null());
             let set_callback_result = guestfs_set_event_callback(
@@ -171,13 +173,13 @@ impl GuestFS {
                 Some(guestfs_event_callback),
                 GUEST_FS_EVENT_APPLIANCE,
                 0,
-                c_ptr as *const libc::c_void,
+                sender_c_ptr as *const libc::c_void,
             );
             if set_callback_result != 0 {
                 let last_error = get_last_error(handle);
                 panic!("GuestFS set event callback failed: {last_error}");
             }
-            (handle, Box::from_raw(c_ptr))
+            handle
         };
         if let Err(error) = disable_signals_propagation(&handle) {
             panic!("disable_signals_propagation failed: {error}");
@@ -185,7 +187,7 @@ impl GuestFS {
         Self {
             handle,
             events_receiver: receiver,
-            _events_sender: boxed_sender,
+            _events_sender: pinned_sender,
         }
     }
 
