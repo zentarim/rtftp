@@ -15,6 +15,8 @@ mod options;
 mod peer_handler;
 mod remote_fs;
 mod server;
+#[cfg(test)]
+mod tests_common;
 
 use crate::fs_watch::Watch;
 use clap::Parser;
