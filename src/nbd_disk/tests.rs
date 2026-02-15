@@ -1,58 +1,11 @@
 use super::*;
 use crate::fs::{OpenedFile, Root};
-use crate::remote_fs::FileReader;
+use crate::tests_common::{ensure_prerequisite_disk, make_payload, read_file};
 use serde_json::json;
-use std::fs::File;
 use std::io::{BufRead, ErrorKind};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
 use std::{fs, io, thread, time};
-
-const DATA_PATTERN: &str = "ARBITRARY DATA";
-
-fn read_file(opened: &mut FileReader) -> Vec<u8> {
-    let mut buffer = vec![];
-    let mut chunk = vec![0u8; 512];
-    loop {
-        let read_size = opened.read_to(&mut chunk).unwrap();
-        if read_size == 0 {
-            break;
-        }
-        buffer.extend_from_slice(&chunk[..read_size]);
-    }
-    buffer
-}
-
-fn make_payload(size: usize) -> Vec<u8> {
-    let pattern = DATA_PATTERN.as_bytes();
-    pattern.iter().copied().cycle().take(size).collect()
-}
-
-fn get_test_data_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests")
-}
-
-fn get_test_qcow() -> PathBuf {
-    get_test_data_dir().join("test_disk_nbd.qcow2")
-}
-
-fn create_prerequisite_disk(path: &PathBuf) {
-    let script = get_test_data_dir().join("build_test_qcow_disk.sh");
-    let status = Command::new(&script)
-        .arg(path.as_path())
-        .arg(DATA_PATTERN)
-        .status()
-        .expect(format!("{:?} failed", script).as_str());
-    if !status.success() {
-        panic!("{script:?} failed");
-    }
-}
-
-fn lock_tests_directory() -> io::Result<File> {
-    let opened = File::open(get_test_data_dir())?;
-    opened.lock()?;
-    Ok(opened)
-}
 
 struct NBDServerProcess {
     process: Child,
@@ -73,13 +26,8 @@ impl Drop for NBDServerProcess {
 }
 
 fn run_nbd_server(listen_ip: &str) -> NBDServerProcess {
-    let locked_tests_directory = lock_tests_directory().unwrap();
-    let disk_path = get_test_qcow();
-    if !disk_path.exists() {
-        create_prerequisite_disk(&disk_path)
-    }
+    let (test_disk, locked_tests_directory) = ensure_prerequisite_disk();
     let export_name = "disk";
-    let test_disk = get_test_qcow().to_string_lossy().to_string();
     let nbd_process = Command::new("qemu-nbd")
         .arg(format!("--bind={listen_ip}"))
         .arg("--port=0")
