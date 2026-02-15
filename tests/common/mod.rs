@@ -10,56 +10,35 @@ use tokio::net::UdpSocket;
 
 pub(crate) mod client;
 
-const _DATA_PATTERN: &str = "ARBITRARY DATA";
-
-pub(super) fn get_free_port() -> u16 {
-    let opened_socket = net::TcpListener::bind(("127.0.1.1", 0)).unwrap();
-    opened_socket.local_addr().unwrap().port()
-}
+const DATA_PATTERN: &str = "ARBITRARY DATA";
 
 pub(super) fn make_payload(size: usize) -> Vec<u8> {
-    let pattern = _DATA_PATTERN.as_bytes();
+    let pattern = DATA_PATTERN.as_bytes();
     pattern.iter().copied().cycle().take(size).collect()
 }
 
-fn get_test_data_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests")
-}
-
-fn get_test_qcow() -> PathBuf {
-    get_test_data_dir().join("test_disk.qcow2")
-}
-
-fn _ensure_prerequisite_disk() {
-    if !get_test_qcow().exists() {
-        let script = get_test_data_dir().join("build_test_qcow_disk.sh");
+fn ensure_prerequisite_disk() -> (PathBuf, File) {
+    let test_data_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests");
+    let test_disk = test_data_dir.join("test_disk.qcow2");
+    let file = File::open(&test_data_dir).unwrap();
+    file.lock().unwrap();
+    if !test_disk.exists() {
+        let script = test_data_dir.join("build_test_qcow_disk.sh");
         let status = Command::new(&script)
-            .arg(get_test_qcow().as_path())
-            .arg(_DATA_PATTERN)
+            .arg(&test_disk)
+            .arg(DATA_PATTERN)
             .status()
             .expect(format!("{:?} failed", script).as_str());
         if !status.success() {
             panic!("{script:?} failed");
         }
     }
+    (test_disk, file)
 }
 
-fn _create_prerequisite_disk() {
-    let script = get_test_data_dir().join("build_test_qcow_disk.sh");
-    let status = Command::new(&script)
-        .arg(get_test_qcow().as_path())
-        .arg(_DATA_PATTERN)
-        .status()
-        .expect(format!("{:?} failed", script).as_str());
-    if !status.success() {
-        panic!("{script:?} failed");
-    }
-}
-
-fn _lock_tests_directory() -> io::Result<File> {
-    let opened = File::open(get_test_data_dir())?;
-    opened.lock()?;
-    Ok(opened)
+pub(super) fn get_free_port() -> u16 {
+    let opened_socket = net::TcpListener::bind(("127.0.1.1", 0)).unwrap();
+    opened_socket.local_addr().unwrap().port()
 }
 
 pub(crate) struct NBDServerProcess {
@@ -81,12 +60,8 @@ impl Drop for NBDServerProcess {
 }
 
 pub(crate) fn run_nbd_server(listen_ip: &str) -> NBDServerProcess {
-    let locked_tests_directory = _lock_tests_directory().unwrap();
-    if !get_test_qcow().exists() {
-        _create_prerequisite_disk()
-    }
+    let (test_disk, locked_tests_directory) = ensure_prerequisite_disk();
     let export_name = "disk";
-    let test_disk = get_test_qcow().to_string_lossy().to_string();
     let nbd_process = Command::new("qemu-nbd")
         .arg(format!("--bind={listen_ip}"))
         .arg("--port=0")
