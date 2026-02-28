@@ -23,5 +23,7 @@ else
 fi
 EOF
 chmod u+x /etc/kernel/postinst.d/zz_kernel_libuestf_perm
-/etc/kernel/postinst.d/zz_kernel_libuestf_perm "" "$(grep -oP 'BOOT_IMAGE=\K\S+' /proc/cmdline)"
+KERNEL_IMAGE_PATH="$(grep -oP 'BOOT_IMAGE=\K\S+' /proc/cmdline)"
+test -f "${KERNEL_IMAGE_PATH}" || KERNEL_IMAGE_PATH="/boot${KERNEL_IMAGE_PATH}"
+/etc/kernel/postinst.d/zz_kernel_libuestf_perm "" "${KERNEL_IMAGE_PATH}"
 fi
