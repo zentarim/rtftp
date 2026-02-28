@@ -33,6 +33,7 @@ fn run_nbd_server(listen_ip: &str) -> NBDServerProcess {
         .arg("--port=0")
         .arg(format!("--export-name={export_name}"))
         .arg("--read-only")
+        .arg("--shared=100")
         .arg(test_disk)
         .spawn()
         .unwrap();
