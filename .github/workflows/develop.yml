@@ -16,7 +16,7 @@ jobs:
       # GutHub environment claims it's user is root. Doesn't look so.
       # Use of 'sudo' and some tweaks are necessary.
       - name: Prepare environment
-        run: sudo apt update && sudo ./prepare_debian_environment.sh && sudo chmod o+r "$(readlink -f /boot/vmlinuz)" && sudo chmod 0666 /dev/kvm
+        run: sudo apt update && sudo ./prepare_ubuntu_environment.sh && sudo chmod o+r "$(readlink -f /boot/vmlinuz)" && sudo chmod 0666 /dev/kvm
 
       - name: Run linter
         run: make lint
