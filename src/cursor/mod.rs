@@ -80,7 +80,7 @@ impl<'a> WriteCursor<'a> {
             )));
         }
         self.buffer[self.offset..end_index - 1].copy_from_slice(string.as_bytes());
-        self.buffer[end_index] = 0x0;
+        self.buffer[end_index - 1] = 0x0;
         self.offset = end_index;
         Ok(self.offset)
     }

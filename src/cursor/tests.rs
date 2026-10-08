@@ -54,6 +54,14 @@ fn extract_string_non_utf() {
 }
 
 #[test]
+fn put_string_terminates_inside_returned_slice() {
+    let mut buffer = [0xFF; 5];
+    let mut cursor = WriteCursor::new(&mut buffer);
+    let end = cursor.put_string("boot").unwrap();
+    assert_eq!(&buffer[..end], b"boot\0");
+}
+
+#[test]
 fn extract_non_terminated_string() {
     let buffer: Vec<u8> = b"Arbitrary_string".to_vec();
     let mut cursor = ReadCursor::new(&buffer);
