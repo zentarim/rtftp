@@ -36,13 +36,13 @@ impl Root for RemoteRoot {
 
 impl Debug for RemoteRoot {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write! {f, "<{:?} in {}>", self.chroot_path, self.disk}
+        write!(f, "<{:?} in {}>", self.chroot_path, self.disk)
     }
 }
 
 impl Display for RemoteRoot {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write! {f, "<{:?} in {}>", self.chroot_path, self.disk}
+        write!(f, "<{:?} in {}>", self.chroot_path, self.disk)
     }
 }
 
@@ -71,13 +71,13 @@ impl Partition {
 
 impl Display for Partition {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write! {f, "<Partition: {}>", self.device}
+        write!(f, "<Partition: {}>", self.device)
     }
 }
 
 impl Debug for Partition {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write! {f, "<Partition: {}>", self.device}
+        write!(f, "<Partition: {}>", self.device)
     }
 }
 
@@ -191,7 +191,7 @@ impl FileReader {
 
 impl Display for FileReader {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write! {f, "{}", self.display}
+        write!(f, "{}", self.display)
     }
 }
 
@@ -230,7 +230,7 @@ pub(super) struct ConnectedDisk {
 
 impl Display for ConnectedDisk {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write! {f, "<NBDDisk: {} [{}]>", self.url, self.handle}
+        write!(f, "<NBDDisk: {} [{}]>", self.url, self.handle)
     }
 }
 

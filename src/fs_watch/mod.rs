@@ -83,7 +83,11 @@ impl Debug for InotifyEvent {
                 String::new()
             }
         };
-        write! {f, "<InotifyEvent: mask=0x{:x}, file_name='{}'>", self.mask, file_name}
+        write!(
+            f,
+            "<InotifyEvent: mask=0x{:x}, file_name='{}'>",
+            self.mask, file_name
+        )
     }
 }
 
@@ -126,7 +130,7 @@ impl Observer for INotifyObserver {
 
 impl Debug for INotifyObserver {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write! {f, "<Observer on: {:?}>", self.display}
+        write!(f, "<Observer on: {:?}>", self.display)
     }
 }
 

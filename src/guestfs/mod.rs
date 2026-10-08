@@ -103,7 +103,7 @@ unsafe extern "C" {
 
     fn guestfs_set_append(handle: *const guestfs_h, append: *const libc::c_char) -> libc::c_int;
 
-    fn guestfs_free_stat(guestfs_free_stat: *const guestfs_stat) -> libc::c_void;
+    fn guestfs_free_stat(guestfs_free_stat: *const guestfs_stat);
 
     fn guestfs_stat(handle: *const guestfs_h, path: *const libc::c_char) -> *mut guestfs_stat;
 
@@ -349,13 +349,13 @@ impl Drop for GuestFS {
 
 impl Display for GuestFS {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write! {f, "<Handle: {:?}>", self.handle}
+        write!(f, "<Handle: {:?}>", self.handle)
     }
 }
 
 impl Debug for GuestFS {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write! {f, "<Handle: {:?}>", self.handle}
+        write!(f, "<Handle: {:?}>", self.handle)
     }
 }
 
@@ -371,7 +371,7 @@ pub(super) enum GuestFSError {
 
 impl Display for GuestFSError {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write! {f, "<GuestFSError: {self:?}>"}
+        write!(f, "<GuestFSError: {self:?}>")
     }
 }
 
