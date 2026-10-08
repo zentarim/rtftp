@@ -1,9 +1,10 @@
 use crate::datagram_stream::DatagramStream;
-use crate::fs::OpenedFile;
+use crate::fs::{OpenedFile, RootKind};
 use crate::options::AckTimeout;
-use crate::peer_handler::{ACK, AckClass, DATA, Window, classify_ack, send_file};
+use crate::peer_handler::{ACK, AckClass, DATA, Window, classify_ack, roots_for_peer, send_file};
+use crate::tests_common::mk_tmp;
 use std::time::Duration;
-use std::{fmt, io};
+use std::{fmt, fs, io};
 use tokio::join;
 use tokio::net::UdpSocket;
 use tokio::time::timeout;
@@ -225,6 +226,35 @@ async fn send_unaligned_data_windowed() {
     let recv_coro = download_stream(&client_stream, block_size, window_size);
     let (_send_result, recv_result) = join!(send_coro, recv_coro);
     assert_eq!(recv_result.unwrap(), test_data);
+}
+
+fn local_root_ends_with(roots: &[RootKind], directory_name: &str) -> bool {
+    let suffix = format!("{directory_name}\">");
+    roots.iter().any(|root| match root {
+        RootKind::Local(local_root) => local_root.to_string().ends_with(&suffix),
+        RootKind::Remote(_) => false,
+    })
+}
+
+#[test]
+fn absent_nbd_config_uses_default_root() {
+    let tftp_root = mk_tmp(absent_nbd_config_uses_default_root);
+    let roots = roots_for_peer(&tftp_root, "10.0.0.1");
+    assert!(local_root_ends_with(&roots, "10.0.0.1"));
+    assert!(local_root_ends_with(&roots, "default"));
+}
+
+#[test]
+fn unusable_nbd_config_skips_default_root() {
+    let tftp_root = mk_tmp(unusable_nbd_config_skips_default_root);
+    fs::write(
+        tftp_root.join("10.0.0.1.nbd"),
+        r#"{"url":"http://127.0.0.1/disk","mounts":[],"tftp_root":"/boot"}"#,
+    )
+    .unwrap();
+    let roots = roots_for_peer(&tftp_root, "10.0.0.1");
+    assert!(local_root_ends_with(&roots, "10.0.0.1"));
+    assert!(!local_root_ends_with(&roots, "default"));
 }
 
 #[test]

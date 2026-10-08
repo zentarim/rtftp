@@ -92,34 +92,44 @@ impl<'a> Config<'a> for NBDConfig {
     }
 }
 
-pub(super) fn open_nbd_root(tftp_root: &PathBuf, ip: &str) -> Option<RemoteRoot> {
+pub(super) enum NbdRoot {
+    Absent,
+    Connected(RemoteRoot),
+    Unusable,
+}
+
+pub(super) fn open_nbd_root(tftp_root: &Path, ip: &str) -> NbdRoot {
     eprintln!("Looking for TFTP root configs in {tftp_root:?} ...");
-    for file_path in files_sorted(tftp_root) {
-        if match_ip(&file_path, ip) {
-            eprintln!("Found TFTP root config {file_path:?}");
-            if let Some(json_struct) = read_json(&file_path) {
-                eprintln!("Found JSON file {file_path:?}");
-                if let Some(nbd_config) = NBDConfig::from_json(&json_struct) {
-                    eprintln!("Found NBD TFTP root config {file_path:?}");
-                    match nbd_config.connect() {
-                        Ok(disk) => {
-                            eprintln!("Connected config {file_path:?}");
-                            return Some(disk);
-                        }
-                        Err(VirtualRootError::ConfigError(error)) => {
-                            eprintln!("Invalid config {file_path:?}: {error}");
-                        }
-                        Err(VirtualRootError::SetupError(error)) => {
-                            eprintln!(
-                                "Failed to connect disk using config {file_path:?}: {error:?}"
-                            );
-                        }
-                    }
-                }
-            }
+    let Some(file_path) = files_sorted(tftp_root)
+        .into_iter()
+        .find(|file_path| match_ip(file_path, ip))
+    else {
+        return NbdRoot::Absent;
+    };
+    eprintln!("Found TFTP root config {file_path:?}");
+    let Some(json_struct) = read_json(&file_path) else {
+        eprintln!("Can't read JSON config {file_path:?}");
+        return NbdRoot::Unusable;
+    };
+    eprintln!("Found JSON file {file_path:?}");
+    let Some(nbd_config) = NBDConfig::from_json(&json_struct) else {
+        return NbdRoot::Unusable;
+    };
+    eprintln!("Found NBD TFTP root config {file_path:?}");
+    match nbd_config.connect() {
+        Ok(disk) => {
+            eprintln!("Connected config {file_path:?}");
+            NbdRoot::Connected(disk)
+        }
+        Err(VirtualRootError::ConfigError(error)) => {
+            eprintln!("Invalid config {file_path:?}: {error}");
+            NbdRoot::Unusable
+        }
+        Err(VirtualRootError::SetupError(error)) => {
+            eprintln!("Failed to connect disk using config {file_path:?}: {error:?}");
+            NbdRoot::Unusable
         }
     }
-    None
 }
 
 fn files_sorted<P: AsRef<Path>>(parent: P) -> Vec<PathBuf> {
