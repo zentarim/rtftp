@@ -7,6 +7,9 @@ use std::io;
 use std::path::PathBuf;
 use std::rc::Rc;
 
+#[cfg(test)]
+mod tests;
+
 pub(super) struct RemoteRoot {
     disk: ConnectedDisk,
     chroot_path: PathBuf,
