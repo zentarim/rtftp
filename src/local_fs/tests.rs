@@ -1,9 +1,36 @@
 use super::*;
 use crate::tests_common::mk_tmp;
 use std::fs::{Permissions, create_dir, set_permissions, write};
-use std::io::ErrorKind;
+use std::io::{self, ErrorKind, Read};
 use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::PathBuf;
+
+/// First `read` returns `first_count` bytes. The next `read` returns the rest.
+struct ShortThenRest {
+    data: Vec<u8>,
+    offset: usize,
+    first_count: usize,
+    reads: usize,
+}
+
+impl Read for ShortThenRest {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        let remaining = self.data.len() - self.offset;
+        if remaining == 0 || buffer.is_empty() {
+            return Ok(0);
+        }
+        let max_count = if self.reads == 0 {
+            self.first_count
+        } else {
+            remaining
+        };
+        let count = max_count.min(buffer.len()).min(remaining);
+        buffer[..count].copy_from_slice(&self.data[self.offset..self.offset + count]);
+        self.offset += count;
+        self.reads += 1;
+        Ok(count)
+    }
+}
 
 #[test]
 fn open_non_existent() {
@@ -33,6 +60,37 @@ fn get_size() {
     let mut result = local_root.open("Cargo.toml").unwrap();
     let size = result.get_size().unwrap();
     assert!(size > 0);
+}
+
+#[test]
+fn get_size_keeps_read_position() {
+    let root_dir = mk_tmp(get_size_keeps_read_position);
+    write(root_dir.join("data.bin"), b"abcdefghij").unwrap();
+    let local_root = LocalRoot { path: root_dir };
+    let mut opened = local_root.open("data.bin").unwrap();
+    let mut first = [0u8; 4];
+    assert_eq!(opened.read_to(&mut first).unwrap(), 4);
+    assert_eq!(&first, b"abcd");
+    assert_eq!(opened.get_size().unwrap(), 10);
+    let mut rest = [0u8; 16];
+    let read_size = opened.read_to(&mut rest).unwrap();
+    assert_eq!(&rest[..read_size], b"efghij");
+}
+
+#[test]
+fn read_until_full_after_short_read() {
+    let payload = b"short-then-rest-payload";
+    let mut reader = ShortThenRest {
+        data: payload.to_vec(),
+        offset: 0,
+        first_count: 5,
+        reads: 0,
+    };
+    let mut buffer = [0xA5u8; 64];
+    let read_size = read_until_full(&mut reader, &mut buffer).unwrap();
+    assert_eq!(read_size, payload.len());
+    assert_eq!(&buffer[..read_size], payload);
+    assert_eq!(reader.reads, 2);
 }
 
 #[test]

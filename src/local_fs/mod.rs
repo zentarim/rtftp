@@ -25,17 +25,34 @@ impl Display for LocalOpenedFile {
     }
 }
 
+/// Fill `buffer` from `reader`.
+///
+/// A short `read` is not end of file. Stop only when the buffer is full or
+/// `read` returns 0.
+fn read_until_full(reader: &mut impl Read, buffer: &mut [u8]) -> io::Result<usize> {
+    let mut filled = 0;
+    while filled < buffer.len() {
+        let read_bytes = reader.read(&mut buffer[filled..])?;
+        if read_bytes == 0 {
+            break;
+        }
+        filled += read_bytes;
+    }
+    Ok(filled)
+}
+
 impl OpenedFile for LocalOpenedFile {
     fn read_to(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
-        let result = self.rd.read(buffer)?;
-        Ok(result)
+        read_until_full(&mut self.rd, buffer)
     }
 
     fn get_size(&mut self) -> io::Result<usize> {
-        let current_pos = self.rd.seek(SeekFrom::Start(0))?;
-        let result = self.rd.seek(SeekFrom::End(0))?;
+        // stream_position is seek(Current(0)). Start(0) always returns 0 and
+        // would rewind a file that has already been read.
+        let current_pos = self.rd.stream_position()?;
+        let size = self.rd.seek(SeekFrom::End(0))?;
         self.rd.seek(SeekFrom::Start(current_pos))?;
-        Ok(result as usize)
+        Ok(size as usize)
     }
 }
 
