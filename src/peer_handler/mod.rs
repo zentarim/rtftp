@@ -67,7 +67,7 @@ impl Window {
     }
 
     fn size(&self) -> u16 {
-        self.buffers.capacity() as u16
+        self.buffers.len() as u16
     }
 
     fn push_block(
@@ -159,35 +159,59 @@ async fn send_file<O: OpenedFile>(
 async fn read_acknowledge(
     datagram_stream: &DatagramStream,
     buffer: &mut [u8],
-    ack_timeout: &AckTimeout,
 ) -> Result<u16, RecvError> {
-    let recv_future = datagram_stream.recv(buffer, 4);
-    if let Ok(read_result) = ack_timeout.timeout(recv_future).await {
-        let _read_size = match read_result {
-            Ok(size) => size,
-            Err(err) => {
-                eprintln!("{datagram_stream}: Read error: {:?}", err);
-                return Err(RecvError::Network);
-            }
-        };
-        let mut datagram = ReadCursor::new(buffer);
-        match datagram.extract_ushort() {
-            Ok(opcode) if opcode == ACK => {
-                Ok(datagram.extract_ushort().map_err(|_| RecvError::ACKError)?)
-            }
-            Ok(opcode) if opcode == ERROR => {
-                let error_code = datagram.extract_ushort().map_err(|_| RecvError::ACKError)?;
-                let error_message = datagram.extract_string().map_err(|_| RecvError::ACKError)?;
-                Err(RecvError::ClientError(error_code, error_message))
-            }
-            Ok(opcode) => {
-                eprintln!("{datagram_stream}: Received unknown opcode 0x{opcode:02x}");
-                Err(RecvError::ACKError)
-            }
-            Err(_) => Err(RecvError::ACKError),
+    if let Err(err) = datagram_stream.recv(buffer, 4).await {
+        eprintln!("{datagram_stream}: Read error: {:?}", err);
+        return Err(RecvError::Network);
+    }
+    let mut datagram = ReadCursor::new(buffer);
+    match datagram.extract_ushort() {
+        Ok(opcode) if opcode == ACK => {
+            Ok(datagram.extract_ushort().map_err(|_| RecvError::ACKError)?)
         }
-    } else {
-        Err(RecvError::Timeout)
+        Ok(opcode) if opcode == ERROR => {
+            let error_code = datagram.extract_ushort().map_err(|_| RecvError::ACKError)?;
+            let error_message = datagram.extract_string().map_err(|_| RecvError::ACKError)?;
+            Err(RecvError::ClientError(error_code, error_message))
+        }
+        Ok(opcode) => {
+            eprintln!("{datagram_stream}: Received unknown opcode 0x{opcode:02x}");
+            Err(RecvError::ACKError)
+        }
+        Err(_) => Err(RecvError::ACKError),
+    }
+}
+
+enum WindowWait {
+    Accepted(u16),
+    Retransmit,
+}
+
+async fn wait_for_window_ack(
+    datagram_stream: &DatagramStream,
+    buffer: &mut [u8],
+    window_index: u16,
+    count: u16,
+) -> Result<WindowWait, RecvError> {
+    let window_end_index = window_index.wrapping_add(count);
+    loop {
+        match read_acknowledge(datagram_stream, buffer).await {
+            Ok(received_ack) => match classify_ack(received_ack, window_index, count) {
+                AckClass::InWindow(acknowledged) => return Ok(WindowWait::Accepted(acknowledged)),
+                AckClass::Previous => {
+                    eprintln!(
+                        "{datagram_stream}: Duplicate ACK {received_ack}, retransmitting {window_index}"
+                    );
+                    return Ok(WindowWait::Retransmit);
+                }
+                AckClass::Other => {
+                    eprintln!(
+                        "{datagram_stream}: Ignore ACK {received_ack} outside {window_index} .. {window_end_index}"
+                    );
+                }
+            },
+            Err(error) => return Err(error),
+        }
     }
 }
 
@@ -196,13 +220,28 @@ pub(super) enum SendError {
     Network,
     Timeout,
     ClientError(u16, String),
-    ACKError,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum AckClass {
+    InWindow(u16),
+    Previous,
+    Other,
+}
+
+fn classify_ack(received_ack: u16, window_index: u16, count: u16) -> AckClass {
+    if received_ack.wrapping_sub(window_index) < count {
+        AckClass::InWindow(received_ack)
+    } else if received_ack == window_index.wrapping_sub(1) {
+        AckClass::Previous
+    } else {
+        AckClass::Other
+    }
 }
 
 #[derive(Debug)]
 pub(super) enum RecvError {
     Network,
-    Timeout,
     ClientError(u16, String),
     ACKError,
 }
@@ -442,8 +481,9 @@ async fn send_reliably(
     window_index: u16,
     count: u16,
 ) -> Result<u16, SendError> {
+    let window_end_index = window_index.wrapping_add(count);
     for attempt in 1..=SEND_ATTEMPTS {
-        for block_index in (0..count).map(|v| window_index.wrapping_add(v)) {
+        for block_index in (0..count).map(|offset| window_index.wrapping_add(offset)) {
             if let Err(send_error) = window.send(block_index, datagram_stream).await {
                 eprintln!(
                     "{datagram_stream}: Network error while sending block {block_index}: {send_error}"
@@ -451,28 +491,27 @@ async fn send_reliably(
                 return Err(SendError::Network);
             }
         }
-        return match read_acknowledge(datagram_stream, buffer, ack_timeout).await {
-            Ok(received_ack) if received_ack >= window_index => Ok(received_ack),
-            Ok(unexpected_ack) => {
-                let tftp_error = TFTPError::undefined("Received ACK from the past");
-                eprintln!(
-                    "{datagram_stream}: Received ACK {unexpected_ack} while expected > {window_index}"
-                );
-                fire_error(tftp_error, datagram_stream, buffer).await;
-                Err(SendError::ACKError)
+        match ack_timeout
+            .timeout(wait_for_window_ack(
+                datagram_stream,
+                buffer,
+                window_index,
+                count,
+            ))
+            .await
+        {
+            Ok(Ok(WindowWait::Accepted(acknowledged))) => return Ok(acknowledged),
+            Ok(Ok(WindowWait::Retransmit)) => {}
+            Ok(Err(RecvError::ClientError(error_code, error_message))) => {
+                return Err(SendError::ClientError(error_code, error_message));
             }
-            Err(RecvError::Timeout) => {
-                let window_end_index = window_index.wrapping_add(count);
+            Ok(Err(_)) => return Err(SendError::Network),
+            Err(_elapsed) => {
                 eprintln!(
                     "{datagram_stream}: Timeout waiting for {window_index} .. {window_end_index}, attempt {attempt}"
                 );
-                continue;
             }
-            Err(RecvError::ClientError(error_code, error_message)) => {
-                Err(SendError::ClientError(error_code, error_message))
-            }
-            Err(_) => Err(SendError::Network),
-        };
+        }
     }
     Err(SendError::Timeout)
 }
@@ -496,25 +535,28 @@ async fn send_oack_reliably(
     };
     for attempt in 1..=SEND_ATTEMPTS {
         datagram_stream.send(&buffer[..oack_size]).await?;
-        match read_acknowledge(datagram_stream, buffer, ack_timeout).await {
-            Ok(ack_num) if ack_num == oack_index => return Ok(()),
-            Ok(ack_num) => {
+        match ack_timeout
+            .timeout(read_acknowledge(datagram_stream, buffer))
+            .await
+        {
+            Ok(Ok(ack_num)) if ack_num == oack_index => return Ok(()),
+            Ok(Ok(ack_num)) => {
                 let tftp_error = TFTPError::undefined("Unexpected non-zero ACK");
                 fire_error(tftp_error, datagram_stream, buffer).await;
                 return Err(io::Error::other(format!(
                     "Received unexpected ACK {ack_num} while expecting {oack_index}"
                 )));
             }
-            Err(RecvError::Timeout) => {
+            Err(_elapsed) => {
                 eprintln!("Timeout waiting for ACK {oack_index}, attempt {attempt}");
                 continue;
             }
-            Err(RecvError::ClientError(code, string)) => {
+            Ok(Err(RecvError::ClientError(code, string))) => {
                 return Err(io::Error::other(format!(
                     "Early termination while options negotiation [{code}] {string}"
                 )));
             }
-            Err(error) => {
+            Ok(Err(error)) => {
                 return Err(io::Error::other(format!("ACK read error: {:?}", error)));
             }
         }
