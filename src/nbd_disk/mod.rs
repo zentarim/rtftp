@@ -141,11 +141,13 @@ fn files_sorted<P: AsRef<Path>>(parent: P) -> Vec<PathBuf> {
 }
 
 fn match_ip(path: &Path, ip: &str) -> bool {
-    if let Some(file_name) = path.file_name().and_then(|os| os.to_str()) {
-        file_name.starts_with(ip)
-    } else {
-        false
-    }
+    let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    let Some(address) = file_name.strip_suffix(".nbd") else {
+        return false;
+    };
+    address == ip
 }
 
 fn read_json(path: &Path) -> Option<Value> {

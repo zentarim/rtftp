@@ -262,6 +262,14 @@ fn read_existing_nonaligned_file() {
 }
 
 #[test]
+fn match_ip_requires_exact_config_name() {
+    assert!(match_ip(Path::new("10.0.0.1.nbd"), "10.0.0.1"));
+    assert!(!match_ip(Path::new("10.0.0.10.nbd"), "10.0.0.1"));
+    assert!(!match_ip(Path::new("10.0.0.1.backup"), "10.0.0.1"));
+    assert!(match_ip(Path::new("10.0.0.10.nbd"), "10.0.0.10"));
+}
+
+#[test]
 fn build_config() {
     let config = json!({
         "url": "nbd://127.0.0.1:1000/arbitrary",
