@@ -1,8 +1,12 @@
 use crate::datagram_stream::DatagramStream;
 use crate::fs::{OpenedFile, RootKind};
+use crate::messages::OptionsAcknowledge;
 use crate::options::AckTimeout;
-use crate::peer_handler::{ACK, AckClass, DATA, Window, classify_ack, roots_for_peer, send_file};
+use crate::peer_handler::{
+    ACK, AckClass, DATA, Window, classify_ack, roots_for_peer, send_file, send_oack_reliably,
+};
 use crate::tests_common::mk_tmp;
+use std::collections::HashMap;
 use std::time::Duration;
 use std::{fmt, fs, io};
 use tokio::join;
@@ -376,4 +380,53 @@ async fn ack_beyond_sent_blocks_is_ignored() {
     let (send_result, recv_result) = transfer.expect("transfer timed out");
     assert!(send_result.is_ok(), "{send_result:?}");
     assert_eq!(recv_result.unwrap(), test_data);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn oack_retransmit_after_dirty_receive_buffer() {
+    let mut options = HashMap::new();
+    options.insert(String::from("timeout"), String::from("1"));
+    let ack_timeout = AckTimeout::find_in(&options).expect("timeout 1 is in range");
+    let mut oack = OptionsAcknowledge::new();
+    oack.push(ack_timeout.as_key_pair());
+
+    let (server_stream, client_stream) = make_streams().await;
+    let mut buffer = vec![0xFFu8; 512];
+    let send_coro = send_oack_reliably(&oack, &server_stream, &ack_timeout, &mut buffer);
+    let recv_coro = async {
+        let mut read_buffer = vec![0u8; 512];
+        let first_size = match timeout(
+            Duration::from_secs(2),
+            client_stream.recv(&mut read_buffer, 4),
+        )
+        .await
+        {
+            Ok(result) => result?,
+            Err(_elapsed) => return Err(DownloadError("timeout".to_string())),
+        };
+        let first_oack = read_buffer[..first_size].to_vec();
+        let opcode = u16::from_be_bytes(first_oack[..2].try_into().unwrap());
+        assert_eq!(opcode, 6);
+        let runt = [0xABu8];
+        client_stream.send(&runt).await?;
+        let second_size = match timeout(
+            Duration::from_secs(3),
+            client_stream.recv(&mut read_buffer, 4),
+        )
+        .await
+        {
+            Ok(result) => result?,
+            Err(_elapsed) => return Err(DownloadError("timeout".to_string())),
+        };
+        assert_eq!(&read_buffer[..second_size], first_oack.as_slice());
+        send_ack(&client_stream, 0).await?;
+        Ok::<(), DownloadError>(())
+    };
+    let transfer = timeout(Duration::from_secs(5), async {
+        join!(send_coro, recv_coro)
+    })
+    .await;
+    let (send_result, recv_result) = transfer.expect("oack negotiation timed out");
+    assert!(send_result.is_ok(), "{send_result:?}");
+    assert!(recv_result.is_ok(), "{recv_result:?}");
 }
