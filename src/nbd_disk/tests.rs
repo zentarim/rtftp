@@ -1,6 +1,6 @@
 use super::*;
 use crate::fs::{OpenedFile, Root};
-use crate::tests_common::{ensure_prerequisite_disk, make_payload, read_file};
+use crate::tests_common::{ensure_prerequisite_disk, make_payload, mk_tmp, read_file};
 use serde_json::json;
 use std::io::{BufRead, ErrorKind};
 use std::path::{Path, PathBuf};
@@ -259,6 +259,29 @@ fn read_existing_nonaligned_file() {
     let expected_data = make_payload(opened.get_size().unwrap());
     let read_data = read_file(&mut opened);
     assert_eq!(read_data, expected_data);
+}
+
+#[test]
+fn missing_config_is_absent() {
+    let tftp_root = mk_tmp(missing_config_is_absent);
+    assert!(matches!(
+        open_nbd_root(&tftp_root, "10.0.0.1"),
+        NbdRoot::Absent
+    ));
+}
+
+#[test]
+fn invalid_config_is_unusable() {
+    let tftp_root = mk_tmp(invalid_config_is_unusable);
+    fs::write(
+        tftp_root.join("10.0.0.1.nbd"),
+        r#"{"url":"http://127.0.0.1/disk","mounts":[],"tftp_root":"/boot"}"#,
+    )
+    .unwrap();
+    assert!(matches!(
+        open_nbd_root(&tftp_root, "10.0.0.1"),
+        NbdRoot::Unusable
+    ));
 }
 
 #[test]

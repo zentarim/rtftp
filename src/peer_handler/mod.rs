@@ -4,14 +4,14 @@ use crate::error::{ERROR, TFTPError};
 use crate::fs::{OpenedFile, RootKind};
 use crate::local_fs::LocalRoot;
 use crate::messages::{OptionsAcknowledge, ReadRequest};
-use crate::nbd_disk::open_nbd_root;
+use crate::nbd_disk::{NbdRoot, open_nbd_root};
 use crate::options::{AckTimeout, Blksize, TSize, WindowSize};
 use std::borrow::Borrow;
 use std::collections::HashMap;
 use std::fmt::{Debug, Display, Formatter};
 use std::io;
 use std::net::{IpAddr, SocketAddr};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::thread::Builder;
 use std::time::Duration;
 use std::{fmt, thread, time};
@@ -281,13 +281,7 @@ impl PeerHandler {
                     .build()
                     .unwrap();
                 let local_task_set = LocalSet::new();
-                let mut available_roots = vec![RootKind::Local(LocalRoot::new(
-                    tftp_root.join(peer.to_string()),
-                ))];
-                if let Some(remote_root) = open_nbd_root(&tftp_root, &peer.to_string()) {
-                    available_roots.push(RootKind::Remote(remote_root))
-                }
-                available_roots.push(RootKind::Local(LocalRoot::new(tftp_root.join("default"))));
+                let available_roots = roots_for_peer(&tftp_root, &peer.to_string());
                 local_task_set.spawn_local(peer_requests_handler(
                     peer,
                     local_address,
@@ -322,6 +316,20 @@ impl PeerHandler {
     pub(super) fn is_finished(&self) -> bool {
         self.thread_handle.is_finished()
     }
+}
+
+fn roots_for_peer(tftp_root: &Path, peer: &str) -> Vec<RootKind> {
+    let mut available_roots = vec![RootKind::Local(LocalRoot::new(tftp_root.join(peer)))];
+    match open_nbd_root(tftp_root, peer) {
+        NbdRoot::Connected(remote_root) => {
+            available_roots.push(RootKind::Remote(remote_root));
+        }
+        NbdRoot::Absent => {
+            available_roots.push(RootKind::Local(LocalRoot::new(tftp_root.join("default"))));
+        }
+        NbdRoot::Unusable => {}
+    }
+    available_roots
 }
 
 async fn peer_requests_handler(
