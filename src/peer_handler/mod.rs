@@ -531,17 +531,18 @@ async fn send_oack_reliably(
     buffer: &mut [u8],
 ) -> io::Result<()> {
     let oack_index = 0;
-    let oack_size = match oack.serialize(buffer) {
-        Ok(size) => size,
-        Err(buffer_error) => {
-            let tftp_error = TFTPError::undefined("OACK build error");
-            fire_error(tftp_error, datagram_stream, buffer).await;
-            return Err(io::Error::other(format!(
-                "Error building options: {buffer_error}"
-            )));
-        }
-    };
     for attempt in 1..=SEND_ATTEMPTS {
+        // Recv writes the ACK into this same buffer, so rebuild before every send.
+        let oack_size = match oack.serialize(buffer) {
+            Ok(size) => size,
+            Err(buffer_error) => {
+                let tftp_error = TFTPError::undefined("OACK build error");
+                fire_error(tftp_error, datagram_stream, buffer).await;
+                return Err(io::Error::other(format!(
+                    "Error building options: {buffer_error}"
+                )));
+            }
+        };
         datagram_stream.send(&buffer[..oack_size]).await?;
         match ack_timeout
             .timeout(read_acknowledge(datagram_stream, buffer))
