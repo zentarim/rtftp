@@ -21,7 +21,7 @@ impl Debug for LocalOpenedFile {
 
 impl Display for LocalOpenedFile {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write! {f, "<OpenedFile {}>", self.display}
+        write!(f, "<OpenedFile {}>", self.display)
     }
 }
 
