@@ -1,4 +1,4 @@
-use crate::fs::{OpenedFile, Root};
+use crate::fs::{OpenedFile, Root, contained_join};
 use std::fmt::{Debug, Display, Formatter};
 use std::fs::{File, OpenOptions};
 use std::io;
@@ -52,12 +52,15 @@ impl LocalRoot {
 impl Root for LocalRoot {
     type OpenedFile = LocalOpenedFile;
     fn open(&self, path: &str) -> io::Result<Self::OpenedFile> {
-        let file_path = self.path.join(path.trim_start_matches('/'));
+        let file_path = contained_join(&self.path, path)?;
         let printable_path = file_path.display().to_string();
-        if !file_path.starts_with(&self.path) {
+        let canonical_root = self.path.canonicalize()?;
+        // Resolve symlinks so a link cannot leave the configured root.
+        let canonical_file = file_path.canonicalize()?;
+        if !canonical_file.starts_with(&canonical_root) {
             return Err(io::ErrorKind::PermissionDenied.into());
         }
-        let result = OpenOptions::new().read(true).open(&file_path)?;
+        let result = OpenOptions::new().read(true).open(&canonical_file)?;
         Ok(LocalOpenedFile {
             rd: result,
             display: printable_path,

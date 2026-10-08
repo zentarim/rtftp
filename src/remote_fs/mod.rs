@@ -1,4 +1,4 @@
-use crate::fs::{OpenedFile, Root};
+use crate::fs::{OpenedFile, Root, contained_join};
 use crate::guestfs::{GuestFS, GuestFSError};
 use serde::Deserialize;
 use serde_json::Value;
@@ -27,13 +27,8 @@ impl RemoteRoot {
 impl Root for RemoteRoot {
     type OpenedFile = FileReader;
     fn open(&self, path: &str) -> io::Result<Self::OpenedFile> {
-        match self
-            .disk
-            .open(self.chroot_path.join(path).to_str().unwrap())
-        {
-            Ok(opened_file) => Ok(opened_file),
-            Err(err) => Err(err),
-        }
+        let full_path = contained_join(&self.chroot_path, path)?;
+        self.disk.open(full_path.to_str().unwrap())
     }
 }
 
