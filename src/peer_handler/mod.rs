@@ -401,56 +401,54 @@ fn schedule_task(
     available_roots: &[RootKind],
     buffer: Vec<u8>,
 ) -> JoinHandle<()> {
-    'done: {
-        for root in available_roots {
-            let error = match root {
-                RootKind::Local(local_root) => match request.open_in(local_root) {
-                    Ok(opened_local_file) => {
-                        break 'done tokio::task::spawn_local(send(
-                            opened_local_file,
-                            datagram_stream,
-                            request.yield_options(),
-                            buffer,
-                        ));
-                    }
-                    Err(err) => err,
-                },
-                RootKind::Remote(remote_root) => match request.open_in(remote_root) {
-                    Ok(opened_local_file) => {
-                        break 'done tokio::task::spawn_local(send(
-                            opened_local_file,
-                            datagram_stream,
-                            request.yield_options(),
-                            buffer,
-                        ));
-                    }
-                    Err(err) => err,
-                },
-            };
-            match error.kind() {
-                io::ErrorKind::NotFound => continue,
-                io::ErrorKind::PermissionDenied => {
-                    break 'done tokio::task::spawn_local(fire_error(
-                        TFTPError::access_violation(),
+    for root in available_roots {
+        let error = match root {
+            RootKind::Local(local_root) => match request.open_in(local_root) {
+                Ok(opened_local_file) => {
+                    return tokio::task::spawn_local(send(
+                        opened_local_file,
                         datagram_stream,
+                        request.yield_options(),
                         buffer,
                     ));
                 }
-                _error => {
-                    break 'done tokio::task::spawn_local(fire_error(
-                        TFTPError::undefined("Server Error"),
+                Err(err) => err,
+            },
+            RootKind::Remote(remote_root) => match request.open_in(remote_root) {
+                Ok(opened_local_file) => {
+                    return tokio::task::spawn_local(send(
+                        opened_local_file,
                         datagram_stream,
+                        request.yield_options(),
                         buffer,
                     ));
                 }
+                Err(err) => err,
+            },
+        };
+        match error.kind() {
+            io::ErrorKind::NotFound => continue,
+            io::ErrorKind::PermissionDenied => {
+                return tokio::task::spawn_local(fire_error(
+                    TFTPError::access_violation(),
+                    datagram_stream,
+                    buffer,
+                ));
+            }
+            _error => {
+                return tokio::task::spawn_local(fire_error(
+                    TFTPError::undefined("Server Error"),
+                    datagram_stream,
+                    buffer,
+                ));
             }
         }
-        tokio::task::spawn_local(fire_error(
-            TFTPError::file_not_found(),
-            datagram_stream,
-            buffer,
-        ))
     }
+    tokio::task::spawn_local(fire_error(
+        TFTPError::file_not_found(),
+        datagram_stream,
+        buffer,
+    ))
 }
 
 async fn send<O: OpenedFile>(
