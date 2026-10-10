@@ -62,7 +62,7 @@ pub(super) struct Partition {
 }
 
 impl Partition {
-    pub(crate) fn new(handle: Rc<GuestFS>, device: String) -> Self {
+    fn new(handle: Rc<GuestFS>, device: String) -> Self {
         Self { handle, device }
     }
 }
@@ -80,7 +80,7 @@ impl Debug for Partition {
 }
 
 impl Partition {
-    pub(crate) fn mount_ro(&self, mountpoint: &str) -> Result<(), GuestFSError> {
+    pub(super) fn mount_ro(&self, mountpoint: &str) -> Result<(), GuestFSError> {
         eprintln!("{self}: Mounting to {mountpoint}");
         self.handle.mount_ro(self.device.as_str(), mountpoint)
     }
@@ -109,7 +109,7 @@ impl Mount {
     }
 }
 
-pub(super) struct FileChunk {
+struct FileChunk {
     buffer: Vec<u8>,
     offset: usize,
 }
@@ -126,10 +126,10 @@ impl Debug for FileChunk {
 }
 
 impl FileChunk {
-    pub(super) fn new(buffer: Vec<u8>) -> Self {
+    fn new(buffer: Vec<u8>) -> Self {
         Self { buffer, offset: 0 }
     }
-    pub(super) fn fill(&mut self, buffer: &mut [u8]) -> usize {
+    fn fill(&mut self, buffer: &mut [u8]) -> usize {
         let available_bytes = &self.buffer[self.offset..];
         if available_bytes.is_empty() {
             return 0;
@@ -157,7 +157,7 @@ pub(super) struct FileReader {
 }
 
 impl FileReader {
-    pub(super) fn open(
+    fn open(
         handle: Rc<GuestFS>,
         path: String,
         file_size: usize,

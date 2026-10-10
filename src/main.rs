@@ -8,7 +8,7 @@ mod error;
 mod fs;
 mod fs_watch;
 mod guestfs;
-pub mod local_fs;
+mod local_fs;
 mod messages;
 mod nbd_disk;
 mod options;

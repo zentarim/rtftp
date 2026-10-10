@@ -22,13 +22,13 @@ unsafe extern "C" {
 }
 static LISTEN_FDS_ENTRY: [u8; 13] = *b"LISTEN_FDS=1\0";
 
-pub(crate) struct NBDServerProcess {
+pub(super) struct NBDServerProcess {
     process: std::process::Child,
     url: String,
 }
 
 impl NBDServerProcess {
-    pub(crate) fn get_url(&self) -> &str {
+    pub(super) fn get_url(&self) -> &str {
         &self.url
     }
 }
@@ -40,7 +40,7 @@ impl Drop for NBDServerProcess {
     }
 }
 
-pub(crate) fn run_nbd_server(listen_ip: &str) -> NBDServerProcess {
+pub(super) fn run_nbd_server(listen_ip: &str) -> NBDServerProcess {
     let (test_disk, locked_tests_directory) = ensure_prerequisite_disk();
     let export_name = "disk";
     let listener = bind_listen_socket(listen_ip);

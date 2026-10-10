@@ -8,7 +8,7 @@ use std::process::{Child, Command};
 use std::{env, net, time};
 use tokio::net::UdpSocket;
 
-pub(crate) mod client;
+pub(super) mod client;
 
 const DATA_PATTERN: &str = "ARBITRARY DATA";
 
@@ -36,7 +36,7 @@ fn ensure_prerequisite_disk() -> (PathBuf, File) {
     (test_disk, file)
 }
 
-pub(super) fn get_free_port() -> u16 {
+fn get_free_port() -> u16 {
     let opened_socket = net::TcpListener::bind(("127.0.1.1", 0)).unwrap();
     opened_socket.local_addr().unwrap().port()
 }
@@ -47,7 +47,7 @@ fn get_fn_name<T>(_: T) -> &'static str {
     type_name::<T>()
 }
 
-pub fn mk_tmp<T>(test_func: T) -> PathBuf {
+pub(super) fn mk_tmp<T>(test_func: T) -> PathBuf {
     let test_dir_name = get_fn_name(test_func).replace("::", "_");
     let pid = std::process::id();
     let test_tmp_dir = env::temp_dir().join(format!("rtftp_{pid}_{test_dir_name}"));
@@ -86,7 +86,7 @@ pub(super) struct RunningServer {
 }
 
 impl RunningServer {
-    pub(crate) async fn open_paired_client(&self, source_ip: &str) -> TFTPClient {
+    pub(super) async fn open_paired_client(&self, source_ip: &str) -> TFTPClient {
         TFTPClient::new(
             UdpSocket::bind((source_ip, 0)).await.unwrap(),
             self.listen_socket,

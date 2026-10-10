@@ -54,7 +54,7 @@ fn add_nbd_device_read_only(handle: &GuestFS, url: &str) -> Result<(), GuestFSEr
 }
 
 #[derive(Debug, Deserialize)]
-pub(super) struct NBDConfig {
+struct NBDConfig {
     url: String,
     mounts: Vec<Mount>,
     tftp_root: String,

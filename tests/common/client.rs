@@ -731,7 +731,7 @@ enum ParseError {
 }
 
 impl ParseError {
-    pub fn generic<T: Into<String>>(msg: T) -> Self {
+    fn generic<T: Into<String>>(msg: T) -> Self {
         ParseError::Generic(msg.into())
     }
 }
