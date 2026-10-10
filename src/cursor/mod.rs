@@ -56,11 +56,11 @@ pub(super) struct WriteCursor<'a> {
 }
 
 impl<'a> WriteCursor<'a> {
-    pub fn new(buffer: &'a mut [u8]) -> Self {
+    pub(super) fn new(buffer: &'a mut [u8]) -> Self {
         Self { buffer, offset: 0 }
     }
 
-    pub fn put_ushort(&mut self, value: u16) -> Result<usize, BufferError> {
+    pub(super) fn put_ushort(&mut self, value: u16) -> Result<usize, BufferError> {
         let end_index = self.offset + 2;
         if end_index > self.buffer.len() {
             return Err(BufferError::new("Too little data left to write u16"));
@@ -71,7 +71,7 @@ impl<'a> WriteCursor<'a> {
         Ok(self.offset)
     }
 
-    pub fn put_string(&mut self, string: &str) -> Result<usize, BufferError> {
+    pub(super) fn put_string(&mut self, string: &str) -> Result<usize, BufferError> {
         let string_size = string.len();
         let end_index = self.offset + string_size + 1;
         if end_index > self.buffer.len() {
@@ -100,7 +100,7 @@ impl Display for BufferError {
 impl std::error::Error for BufferError {}
 
 impl BufferError {
-    pub fn new(message: &str) -> Self {
+    fn new(message: &str) -> Self {
         Self {
             message: message.to_string(),
         }

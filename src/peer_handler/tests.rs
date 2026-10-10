@@ -89,7 +89,7 @@ async fn make_streams() -> (DatagramStream, DatagramStream) {
 }
 
 #[derive(Debug)]
-pub(crate) struct DownloadError(String);
+struct DownloadError(String);
 
 impl fmt::Display for DownloadError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

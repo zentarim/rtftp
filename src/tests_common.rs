@@ -12,7 +12,7 @@ fn get_fn_name<T>(_: T) -> &'static str {
     type_name::<T>()
 }
 
-pub fn mk_tmp<T>(test_func: T) -> PathBuf {
+pub(super) fn mk_tmp<T>(test_func: T) -> PathBuf {
     let test_dir_name = get_fn_name(test_func).replace("::", "_");
     let pid = std::process::id();
     let test_tmp_dir = env::temp_dir().join(format!("rtftp_{pid}_{test_dir_name}"));

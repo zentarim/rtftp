@@ -108,7 +108,7 @@ impl Event for InotifyEvent {
     }
 }
 
-pub(super) enum ParseError {
+enum ParseError {
     NotEnoughBytes,
 }
 
@@ -134,7 +134,7 @@ impl Debug for INotifyObserver {
     }
 }
 
-pub struct Watch(u32);
+pub(super) struct Watch(u32);
 
 impl Watch {
     pub(super) fn new() -> Self {
@@ -145,7 +145,7 @@ impl Watch {
     }
 
     #[allow(dead_code)]
-    pub(super) fn removal(self) -> Self {
+    fn removal(self) -> Self {
         Self(self.0 | libc::IN_DELETE)
     }
 

@@ -88,7 +88,7 @@ pub(super) struct OptionsAcknowledge {
 }
 
 impl OptionsAcknowledge {
-    pub fn new() -> Self {
+    pub(super) fn new() -> Self {
         Self {
             options: Vec::new(),
         }
@@ -110,11 +110,11 @@ impl OptionsAcknowledge {
         };
         Ok(offset)
     }
-    pub fn push(&mut self, option: (String, String)) {
+    pub(super) fn push(&mut self, option: (String, String)) {
         self.options.push(option)
     }
 
-    pub fn has_options(&self) -> bool {
+    pub(super) fn has_options(&self) -> bool {
         !self.options.is_empty()
     }
 }

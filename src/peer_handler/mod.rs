@@ -216,7 +216,7 @@ async fn wait_for_window_ack(
 }
 
 #[derive(Debug)]
-pub(super) enum SendError {
+enum SendError {
     Network,
     Timeout,
     ClientError(u16, String),
@@ -240,7 +240,7 @@ fn classify_ack(received_ack: u16, window_index: u16, count: u16) -> AckClass {
 }
 
 #[derive(Debug)]
-pub(super) enum RecvError {
+enum RecvError {
     Network,
     ClientError(u16, String),
     ACKError,
