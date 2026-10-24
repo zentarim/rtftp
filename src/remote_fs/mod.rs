@@ -1,11 +1,12 @@
 use crate::fs::{OpenedFile, Root, contained_join};
-use crate::guestfs::{GuestFS, GuestFSError};
+use crate::vm::{Vm, VmError, connect_client};
+use file_protocol::{FILE_NOT_FOUND, MAX_CHUNK_SIZE, Reply, read_chunk, read_reply, write_request};
 use serde::Deserialize;
 use serde_json::Value;
 use std::fmt::{Debug, Display, Formatter};
-use std::io;
+use std::io::{self, Write};
+use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
-use std::rc::Rc;
 
 #[cfg(test)]
 mod tests;
@@ -33,57 +34,27 @@ impl Root for RemoteRoot {
 }
 
 impl Debug for RemoteRoot {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "<{:?} in {}>", self.chroot_path, self.disk)
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "<{:?} in {}>", self.chroot_path, self.disk)
     }
 }
 
 impl Display for RemoteRoot {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "<{:?} in {}>", self.chroot_path, self.disk)
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "<{:?} in {}>", self.chroot_path, self.disk)
     }
 }
 
 pub(super) trait Config<'a>: Deserialize<'a> {
     fn from_json(value: &Value) -> Option<Self>;
 
-    fn connect(&self) -> Result<RemoteRoot, VirtualRootError>;
+    fn connect(&self, peer: &str) -> Result<RemoteRoot, VirtualRootError>;
 }
 
 #[derive(Debug)]
 pub(super) enum VirtualRootError {
     ConfigError(String),
-    SetupError(GuestFSError),
-}
-
-pub(super) struct Partition {
-    handle: Rc<GuestFS>,
-    device: String,
-}
-
-impl Partition {
-    fn new(handle: Rc<GuestFS>, device: String) -> Self {
-        Self { handle, device }
-    }
-}
-
-impl Display for Partition {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "<Partition: {}>", self.device)
-    }
-}
-
-impl Debug for Partition {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "<Partition: {}>", self.device)
-    }
-}
-
-impl Partition {
-    pub(super) fn mount_ro(&self, mountpoint: &str) -> Result<(), GuestFSError> {
-        eprintln!("{self}: Mounting to {mountpoint}");
-        self.handle.mount_ro(self.device.as_str(), mountpoint)
-    }
+    SetupError(VmError),
 }
 
 #[derive(Debug, Deserialize)]
@@ -93,19 +64,12 @@ pub(super) struct Mount {
 }
 
 impl Mount {
-    pub(super) fn mount_suitable(&self, available: &[Partition]) -> Result<(), VirtualRootError> {
-        if let Some(partition) = available.get(self.partition - 1) {
-            if let Err(guestfs_error) = partition.mount_ro(self.mountpoint.as_str()) {
-                Err(VirtualRootError::SetupError(guestfs_error))
-            } else {
-                Ok(())
-            }
-        } else {
-            Err(VirtualRootError::ConfigError(format!(
-                "Can't find a config for partition {}",
-                self.partition
-            )))
-        }
+    pub(super) fn partition(&self) -> usize {
+        self.partition
+    }
+
+    pub(super) fn mountpoint(&self) -> &str {
+        &self.mountpoint
     }
 }
 
@@ -115,9 +79,9 @@ struct FileChunk {
 }
 
 impl Debug for FileChunk {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
         write!(
-            f,
+            formatter,
             "<FileChunk {}, offset {}>",
             self.buffer.len(),
             self.offset
@@ -129,6 +93,7 @@ impl FileChunk {
     fn new(buffer: Vec<u8>) -> Self {
         Self { buffer, offset: 0 }
     }
+
     fn fill(&mut self, buffer: &mut [u8]) -> usize {
         let available_bytes = &self.buffer[self.offset..];
         if available_bytes.is_empty() {
@@ -148,8 +113,7 @@ impl FileChunk {
 
 #[derive(Debug)]
 pub(super) struct FileReader {
-    handle: Rc<GuestFS>,
-    path: String,
+    stream: UnixStream,
     file_size: usize,
     current_offset: usize,
     chunk: FileChunk,
@@ -157,16 +121,22 @@ pub(super) struct FileReader {
 }
 
 impl FileReader {
-    fn open(
-        handle: Rc<GuestFS>,
-        path: String,
-        file_size: usize,
-        display: String,
-    ) -> Result<Self, GuestFSError> {
-        let first_chunk = handle.read_chunk(&path, 0)?;
+    fn open(vsock_path: &std::path::Path, path: &str, display: String) -> io::Result<Self> {
+        let mut stream = connect_client(vsock_path)?;
+        write_request(&mut stream, path, MAX_CHUNK_SIZE)?;
+        stream.flush()?;
+        let file_size = match read_reply(&mut stream)? {
+            Reply::Info(size) => {
+                usize::try_from(size).map_err(|_| io::Error::other("file size exceeds usize"))?
+            }
+            Reply::Error(text) if text == FILE_NOT_FOUND => {
+                return Err(io::ErrorKind::NotFound.into());
+            }
+            Reply::Error(text) => return Err(io::Error::other(text)),
+        };
+        let first_chunk = read_chunk(&mut stream)?;
         Ok(Self {
-            handle,
-            path,
+            stream,
             file_size,
             current_offset: 0,
             chunk: FileChunk::new(first_chunk),
@@ -174,10 +144,8 @@ impl FileReader {
         })
     }
 
-    fn buffer_new_chunk(&mut self) -> Result<bool, GuestFSError> {
-        let next_chunk = self
-            .handle
-            .read_chunk(self.path.as_str(), self.current_offset)?;
+    fn buffer_new_chunk(&mut self) -> io::Result<bool> {
+        let next_chunk = read_chunk(&mut self.stream)?;
         if next_chunk.is_empty() {
             Ok(false)
         } else {
@@ -188,27 +156,22 @@ impl FileReader {
 }
 
 impl Display for FileReader {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.display)
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "{}", self.display)
     }
 }
 
 impl OpenedFile for FileReader {
     fn read_to(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
-        let mut read: usize = 0;
+        let mut read = 0;
         while self.current_offset < self.file_size && read < buffer.len() {
             let copied = self.chunk.fill(&mut buffer[read..]);
             if copied == 0 {
-                let chunk_has_data = match self.buffer_new_chunk() {
-                    Ok(result) => result,
-                    Err(guestfs_error) => {
-                        return Err(io::Error::other(guestfs_error));
-                    }
-                };
+                let chunk_has_data = self.buffer_new_chunk()?;
                 if !chunk_has_data {
                     break;
                 }
-            };
+            }
             read += copied;
             self.current_offset += copied;
         }
@@ -222,59 +185,34 @@ impl OpenedFile for FileReader {
 
 #[derive(Debug)]
 pub(super) struct ConnectedDisk {
-    handle: Rc<GuestFS>,
+    vm: Option<Box<Vm>>,
     url: String,
 }
 
 impl Display for ConnectedDisk {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "<NBDDisk: {} [{}]>", self.url, self.handle)
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "<NBDDisk: {}>", self.url)
     }
 }
 
 impl ConnectedDisk {
-    pub(super) fn new(handle: Rc<GuestFS>, url: String) -> Self {
-        Self { handle, url }
+    pub(super) fn new(vm: Vm, url: String) -> Self {
+        Self {
+            vm: Some(Box::new(vm)),
+            url,
+        }
     }
-}
 
-impl ConnectedDisk {
-    pub(super) fn list_partitions(&mut self) -> Result<Vec<Partition>, GuestFSError> {
-        let partitions = self.handle.list_partitions()?;
-        eprintln!("{self}: Found partitions: {partitions:?}");
-        let mut result: Vec<Partition> = Vec::new();
-        for partition_name in partitions {
-            result.push(Partition::new(self.handle.clone(), partition_name));
-        }
-        for warning in self.handle.retrieve_appliance_stderr() {
-            eprintln!("{self}: {warning}");
-        }
-        Ok(result)
+    #[cfg(test)]
+    pub(super) fn unconnected(url: String) -> Self {
+        Self { vm: None, url }
     }
 
     pub(super) fn open(&self, absolute_path: &str) -> io::Result<FileReader> {
-        let file_size = match self.handle.get_size(absolute_path) {
-            Ok(file_size) => file_size,
-            Err(guestfs_error) => {
-                return if guestfs_error
-                    .to_string()
-                    .contains("No such file or directory")
-                {
-                    Err(io::ErrorKind::NotFound.into())
-                } else {
-                    Err(io::Error::other(guestfs_error))
-                };
-            }
+        let Some(vm) = &self.vm else {
+            return Err(io::Error::other("disk is not connected"));
         };
         let display = format!("<{absolute_path} on {self}>");
-        match FileReader::open(
-            self.handle.clone(),
-            absolute_path.to_string(),
-            file_size,
-            display,
-        ) {
-            Ok(file_reader) => Ok(file_reader),
-            Err(guestfs_error) => Err(io::Error::other(guestfs_error)),
-        }
+        FileReader::open(vm.vsock_path(), absolute_path, display)
     }
 }

@@ -41,23 +41,41 @@ fn ensure_prerequisite_disk() -> (PathBuf, File) {
     (test_disk, file)
 }
 
-/// Build the libguestfs supermin appliance before anything is timed.
+/// Bring the guest initramfs cache up to date before anything is timed.
 ///
-/// libguestfs builds the appliance lazily on its first launch. A cached test
-/// disk never runs guestfish, so it does not guarantee the appliance exists.
+/// Every VM launch runs mk-initramfs.sh, which rebuilds its cached archive
+/// when the kernel modules, the storekeeper binary or the script is newer.
+/// Run it once here with the same inputs the server resolves from the
+/// source tree, so a timed launch only checks the cache.
 #[allow(dead_code)]
-pub(super) fn ensure_supermin_appliance() {
-    static APPLIANCE: OnceLock<()> = OnceLock::new();
-    APPLIANCE.get_or_init(|| {
-        let test_data_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests");
-        let file = File::open(&test_data_dir).unwrap();
-        file.lock().unwrap();
-        let status = Command::new("guestfish")
-            .args(["-a", "/dev/null", "run"])
+pub(super) fn ensure_guest_initramfs() {
+    static INITRAMFS: OnceLock<()> = OnceLock::new();
+    INITRAMFS.get_or_init(|| {
+        let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let target_dir = env::var_os("CARGO_TARGET_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| manifest_dir.join("target"));
+        let storekeeper = env::var_os("RTFTP_STOREKEEPER").map_or_else(
+            || target_dir.join("x86_64-unknown-linux-musl/release/rtftp-storekeeper"),
+            PathBuf::from,
+        );
+        let script = env::var_os("RTFTP_MK_INITRAMFS").map_or_else(
+            || manifest_dir.join("scripts/mk-initramfs.sh"),
+            PathBuf::from,
+        );
+        if !storekeeper.is_file() {
+            panic!("{storekeeper:?} is missing; build it with `make storekeeper`");
+        }
+        let uid = unsafe { libc::geteuid() };
+        let output = PathBuf::from(format!("/var/tmp/rtftp-{uid}/initramfs.cpio"));
+        std::fs::create_dir_all(output.parent().unwrap()).unwrap();
+        let status = Command::new(&script)
+            .env("STOREKEEPER", &storekeeper)
+            .env("OUTPUT", &output)
             .status()
-            .unwrap_or_else(|err| panic!("guestfish failed to start: {err}"));
+            .unwrap_or_else(|err| panic!("{script:?} failed to start: {err}"));
         if !status.success() {
-            panic!("guestfish could not launch the appliance: {status}");
+            panic!("{script:?} failed: {status}");
         }
     });
 }
@@ -325,7 +343,7 @@ pub(super) fn appliance_pids(server_pid: u32) -> Vec<u32> {
             continue;
         }
         seen.push(pid);
-        if command_line_contains_qemu(pid) {
+        if command_line_is_guest(pid) {
             found.push(pid);
         }
         pending.extend(child_pids(pid));
@@ -410,13 +428,17 @@ fn child_pids(pid: u32) -> Vec<u32> {
     children
 }
 
-fn command_line_contains_qemu(pid: u32) -> bool {
+fn command_line_is_guest(pid: u32) -> bool {
     let Ok(command_line) = std::fs::read(format!("/proc/{pid}/cmdline")) else {
         return false;
     };
-    command_line
-        .windows(b"qemu".len())
-        .any(|window| window == b"qemu")
+    [b"cloud-hypervisor".as_slice(), b"qemu".as_slice()]
+        .into_iter()
+        .any(|needle| {
+            command_line
+                .windows(needle.len())
+                .any(|window| window == needle)
+        })
 }
 
 fn process_has_inotify(server_pid: u32) -> bool {

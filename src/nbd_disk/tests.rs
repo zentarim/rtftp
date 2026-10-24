@@ -1,6 +1,7 @@
 use super::*;
 use crate::fs::{OpenedFile, Root};
 use crate::tests_common::{ensure_prerequisite_disk, make_payload, mk_tmp, read_file};
+use crate::vm::VmError;
 use serde_json::json;
 use std::io::ErrorKind;
 use std::path::Path;
@@ -18,10 +19,8 @@ fn test_add_nbd_disk() {
         "Expected Ok, got Err: {:?}",
         result.unwrap_err()
     );
-    let mut disk = result.unwrap();
-    let partitions = disk.list_partitions().unwrap();
-    eprintln!("{:?}", partitions);
-    eprintln!("{}", disk);
+    let disk = result.unwrap();
+    eprintln!("{disk}");
     let end_time = time::Instant::now();
     eprintln!(
         "Spent: {:.3} s",
@@ -38,10 +37,7 @@ fn test_add_non_existing_share_disk() {
     let non_exising_share = vec![url_prefix, non_existing_share].join("/");
     let result = attach_nbd_disk(non_exising_share);
     assert!(result.is_err(), "Unexpected success received");
-    assert!(matches!(
-        result.err().unwrap(),
-        GuestFSError::ShareNotFound(_)
-    ))
+    assert!(matches!(result.err().unwrap(), VmError::ShareNotFound(_)))
 }
 
 #[test]
@@ -51,19 +47,14 @@ fn test_add_invalid_url() {
     assert!(result.is_err());
     assert!(matches!(
         result.err().unwrap(),
-        GuestFSError::ConnectionRefused(_)
+        VmError::ConnectionRefused(_)
     ))
 }
 
 #[test]
 fn open_existing_file() {
     let nbd_process = run_nbd_server("127.0.0.2");
-    let mut disk = attach_nbd_disk(nbd_process.get_url()).unwrap();
-    let partitions = disk.list_partitions().unwrap();
-    let boot = partitions.get(0).unwrap();
-    let root = partitions.get(1).unwrap();
-    assert!(root.mount_ro("/").is_ok());
-    assert!(boot.mount_ro("/boot").is_ok());
+    let disk = attach_nbd_disk(nbd_process.get_url()).unwrap();
     let file = "/boot/aligned.file";
     let opened = disk.open(file);
     assert!(opened.is_ok());
@@ -73,10 +64,7 @@ fn open_existing_file() {
 #[test]
 fn open_non_existing_file() {
     let nbd_process = run_nbd_server("127.0.0.2");
-    let mut disk = attach_nbd_disk(nbd_process.get_url()).unwrap();
-    let partitions = disk.list_partitions().unwrap();
-    let root = partitions.get(1).unwrap();
-    assert!(root.mount_ro("/").is_ok());
+    let disk = attach_nbd_disk(nbd_process.get_url()).unwrap();
     let file = "/nonexisting/file";
     let result = disk.open(file);
     assert_eq!(result.err().unwrap().kind(), ErrorKind::NotFound);
@@ -85,12 +73,7 @@ fn open_non_existing_file() {
 #[test]
 fn read_existing_aligned_file() {
     let nbd_process = run_nbd_server("127.0.0.2");
-    let mut disk = attach_nbd_disk(nbd_process.get_url()).unwrap();
-    let partitions = disk.list_partitions().unwrap();
-    let root = partitions.get(1).unwrap();
-    let boot = partitions.get(0).unwrap();
-    assert!(root.mount_ro("/").is_ok());
-    assert!(boot.mount_ro("/boot").is_ok());
+    let disk = attach_nbd_disk(nbd_process.get_url()).unwrap();
     let chroot = RemoteRoot::new(disk, "/boot");
     let file = "aligned.file";
     let mut opened = chroot.open(file).unwrap();
@@ -102,12 +85,7 @@ fn read_existing_aligned_file() {
 #[test]
 fn read_existing_nonaligned_file() {
     let nbd_process = run_nbd_server("127.0.0.2");
-    let mut disk = attach_nbd_disk(nbd_process.get_url()).unwrap();
-    let partitions = disk.list_partitions().unwrap();
-    let root = partitions.get(1).unwrap();
-    let boot = partitions.get(0).unwrap();
-    assert!(root.mount_ro("/").is_ok());
-    assert!(boot.mount_ro("/boot").is_ok());
+    let disk = attach_nbd_disk(nbd_process.get_url()).unwrap();
     let chroot = RemoteRoot::new(disk, "/boot");
     let file = "nonaligned.file";
     let mut opened = chroot.open(file).unwrap();
@@ -187,6 +165,6 @@ fn connect_from_config() {
     }
     );
     let nbd_config = NBDConfig::from_json(&config).unwrap();
-    let running_disk = nbd_config.connect();
+    let running_disk = nbd_config.connect("10.0.0.1");
     assert!(running_disk.is_ok());
 }

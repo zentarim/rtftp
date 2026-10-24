@@ -1,6 +1,6 @@
 # Project RTFTP
 
-**RTFTP** is a TFTP server powered by the [**libguestfs**](https://libguestfs.org/) project, designed to serve files directly from remote disks over NBD. It enables serving NBD-placed boot-related data—such as kernel images, initrd files, or GRUB configurations—via the TFTP protocol. This approach makes it possible to update or modify boot data (e.g., kernel upgrades or initrd rebuilds) directly from within the device that uses the filesystem itself.
+**RTFTP** is a TFTP server that serves files from remote disks over NBD. For each client that has an `.nbd` config it boots a [cloud-hypervisor](https://github.com/cloud-hypervisor/cloud-hypervisor) VM on the host kernel, mounts the disk read-only inside a small initramfs, and reads files over virtio-vsock. That serves boot files such as kernels, initrd images, and GRUB configuration, so those files can be updated from the machine that owns the filesystem.
 
 This is particularly useful for managing clusters of diskless bare-metal servers or TFTP-boot capable ARM boards such as the Raspberry Pi.
 
@@ -93,7 +93,7 @@ In this example:
 - Only Read Request (RRQ) is supported.
 - If a file exists in both the local directory and the NBD-based filesystem, the **local file takes precedence**.
 - If a file exists in both the `default` directory and a client directory, the latter is downloaded.
-- Initial setup of the virtual NBD filesystem takes **1.5 to 3 seconds**, so the first request usually need to be retried automatically by the client.
+- The first request for a client waits while its VM boots, so the client usually retries that request.
 - The NBD disk is either:
   - Connected proactively when config is created to avoid the first read request delay.
   - Connected lazily on the first read request.

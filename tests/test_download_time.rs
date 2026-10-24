@@ -1,6 +1,6 @@
 use crate::common::client::timed_download;
 use crate::common::{
-    ensure_supermin_appliance, make_payload, run_nbd_server, start_rtftp_with_idle_timeout,
+    ensure_guest_initramfs, make_payload, run_nbd_server, start_rtftp_with_idle_timeout,
     wait_until_appliances_gone,
 };
 use serde_json::json;
@@ -121,7 +121,7 @@ fn spread(values: &mut [f64]) -> (f64, f64, f64) {
 #[tokio::test(flavor = "current_thread")]
 #[ignore = "measurement; run with `make bench-download`"]
 async fn measure_download_time() {
-    ensure_supermin_appliance();
+    ensure_guest_initramfs();
     // Server logs of an earlier measurement would mix with this one.
     let logs_dir = report_dir().join("logs");
     let _ = fs::remove_dir_all(&logs_dir);
