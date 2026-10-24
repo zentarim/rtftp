@@ -49,7 +49,7 @@ impl Display for RemoteRoot {
 pub(super) trait Config<'a>: Deserialize<'a> {
     fn from_json(value: &Value) -> Option<Self>;
 
-    fn connect(&self, peer: &str) -> Result<RemoteRoot, VirtualRootError>;
+    async fn connect(&self, peer: &str) -> Result<RemoteRoot, VirtualRootError>;
 }
 
 #[derive(Debug)]

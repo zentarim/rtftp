@@ -1,16 +1,15 @@
 use file_protocol::VSOCK_PORT;
 use std::fs::{self, File};
-use std::io::{self, Read, Seek, Write};
-use std::os::unix::net::UnixStream;
-use std::os::unix::process::CommandExt;
+use std::io::{self, Read, Seek};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::Stdio;
 use std::sync::Arc;
 use std::sync::Once;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
+use tokio::process::{Child, Command};
 
 #[cfg(test)]
 mod tests;
@@ -61,10 +60,10 @@ impl Vm {
 impl Drop for Vm {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
-        if matches!(self.child.try_wait(), Ok(None)) {
-            let pid = self.child.id();
+        if matches!(self.child.try_wait(), Ok(None))
+            && let Some(pid) = self.child.id()
+        {
             unsafe { libc::kill(-(pid as i32), libc::SIGKILL) };
-            let _ = self.child.wait();
         }
         for thread in self.threads.drain(..) {
             let _ = thread.join();
@@ -85,7 +84,7 @@ impl std::fmt::Debug for Vm {
     }
 }
 
-pub(super) fn launch(url: &str, mounts: &[(usize, &str)], peer: &str) -> Result<Vm, VmError> {
+pub(super) async fn launch(url: &str, mounts: &[(usize, &str)], peer: &str) -> Result<Vm, VmError> {
     ignore_sigpipe();
     let disk = disk_argument(url)?;
     let hypervisor = find_tool(
@@ -98,7 +97,7 @@ pub(super) fn launch(url: &str, mounts: &[(usize, &str)], peer: &str) -> Result<
         "rtftp-storekeeper",
         "x86_64-unknown-linux-musl/release/rtftp-storekeeper",
     )?;
-    let initramfs = build_initramfs(&storekeeper)?;
+    let initramfs = build_initramfs(&storekeeper).await?;
     let kernel = host_kernel()?;
     let dir = vm_dir(peer);
     fs::create_dir_all(&dir).map_err(|error| VmError::Generic(error.to_string()))?;
@@ -149,7 +148,7 @@ pub(super) fn launch(url: &str, mounts: &[(usize, &str)], peer: &str) -> Result<
         stop,
         threads,
     };
-    wait_until_ready(&mut vm, url)?;
+    wait_until_ready(&mut vm, url).await?;
     Ok(vm)
 }
 
@@ -231,13 +230,13 @@ pub(super) fn classify_launch_error(hypervisor_log: &str, serial_log: &str, url:
     VmError::Generic(text)
 }
 
-fn wait_until_ready(vm: &mut Vm, url: &str) -> Result<(), VmError> {
+async fn wait_until_ready(vm: &mut Vm, url: &str) -> Result<(), VmError> {
     let deadline = Instant::now() + READY_TIMEOUT;
-    match blocking_handshake(&vm.vsock_path, deadline, Some(&mut vm.child)) {
+    match handshake(&vm.vsock_path, deadline, Some(&mut vm.child)).await {
         Ok(_stream) => Ok(()),
         Err(error) => {
-            let serial = read_log(&vm.serial_path);
-            let hypervisor = read_log(&vm.stderr_path);
+            let serial = read_log(&vm.serial_path).await;
+            let hypervisor = read_log(&vm.stderr_path).await;
             let mut hypervisor_text = hypervisor;
             if !hypervisor_text.is_empty() && !hypervisor_text.ends_with('\n') {
                 hypervisor_text.push('\n');
@@ -331,82 +330,7 @@ async fn read_async_line<R: AsyncRead + Unpin>(reader: &mut R, limit: usize) -> 
     String::from_utf8(bytes).map_err(|error| io::Error::other(error.to_string()))
 }
 
-fn blocking_handshake(
-    vsock_path: &Path,
-    deadline: Instant,
-    mut child: Option<&mut Child>,
-) -> io::Result<UnixStream> {
-    let mut last_error = io::Error::new(io::ErrorKind::TimedOut, "guest did not accept vsock");
-    while Instant::now() < deadline {
-        if let Some(process) = child.as_mut()
-            && let Ok(Some(status)) = process.try_wait()
-        {
-            return Err(io::Error::other(format!(
-                "cloud-hypervisor exited: {status}"
-            )));
-        }
-        if !vsock_path.exists() {
-            thread::sleep(Duration::from_millis(50));
-            continue;
-        }
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        if remaining.is_zero() {
-            break;
-        }
-        let mut stream = match UnixStream::connect(vsock_path) {
-            Ok(stream) => stream,
-            Err(error) => {
-                last_error = error;
-                thread::sleep(Duration::from_millis(50));
-                continue;
-            }
-        };
-        stream.set_read_timeout(Some(remaining))?;
-        stream.set_write_timeout(Some(remaining))?;
-        if let Err(error) = stream.write_all(format!("CONNECT {VSOCK_PORT}\n").as_bytes()) {
-            last_error = error;
-            continue;
-        }
-        match read_line(&mut stream, 64) {
-            Ok(line) if line.starts_with("OK ") => {
-                stream.set_read_timeout(None)?;
-                stream.set_write_timeout(None)?;
-                return Ok(stream);
-            }
-            Ok(line) => {
-                return Err(io::Error::other(format!(
-                    "unexpected vsock handshake: {line}"
-                )));
-            }
-            Err(error) => {
-                let timed_out = error.kind() == io::ErrorKind::TimedOut;
-                last_error = error;
-                if timed_out || Instant::now() >= deadline {
-                    break;
-                }
-            }
-        }
-    }
-    Err(last_error)
-}
-
-fn read_line<R: Read>(reader: &mut R, limit: usize) -> io::Result<String> {
-    let mut bytes = Vec::new();
-    loop {
-        let mut byte = [0u8; 1];
-        reader.read_exact(&mut byte)?;
-        if byte[0] == b'\n' {
-            break;
-        }
-        if bytes.len() == limit {
-            return Err(io::Error::other("vsock handshake line is too long"));
-        }
-        bytes.push(byte[0]);
-    }
-    String::from_utf8(bytes).map_err(|error| io::Error::other(error.to_string()))
-}
-
-fn build_initramfs(storekeeper: &Path) -> Result<PathBuf, VmError> {
+async fn build_initramfs(storekeeper: &Path) -> Result<PathBuf, VmError> {
     let script = find_initramfs_script()?;
     eprintln!("mk-initramfs script {}", script.display());
     let output = runtime_dir().join("initramfs.cpio");
@@ -416,6 +340,7 @@ fn build_initramfs(storekeeper: &Path) -> Result<PathBuf, VmError> {
         .env("STOREKEEPER", storekeeper)
         .env("OUTPUT", &output)
         .output()
+        .await
         .map_err(|error| VmError::Generic(format!("mk-initramfs.sh: {error}")))?;
     for stream in [&result.stdout, &result.stderr] {
         for line in String::from_utf8_lossy(stream).lines() {
@@ -545,8 +470,9 @@ fn forward_file(path: PathBuf, stop: Arc<AtomicBool>) -> JoinHandle<()> {
     })
 }
 
-fn read_log(path: &Path) -> String {
-    fs::read(path)
+async fn read_log(path: &Path) -> String {
+    tokio::fs::read(path)
+        .await
         .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
         .unwrap_or_default()
 }

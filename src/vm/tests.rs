@@ -88,16 +88,20 @@ fn launch_errors_keep_the_nbd_failure_classes() {
     ));
 }
 
-#[test]
-fn test_open_existing_disk() {
+#[tokio::test(flavor = "current_thread")]
+async fn test_open_existing_disk() {
     let (test_disk, _lock) = ensure_prerequisite_disk();
-    launch(test_disk.to_str().unwrap(), &boot_mounts(), "qcow-open").unwrap();
+    launch(test_disk.to_str().unwrap(), &boot_mounts(), "qcow-open")
+        .await
+        .unwrap();
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn test_read_aligned_file() {
     let (test_disk, _lock) = ensure_prerequisite_disk();
-    let vm = launch(test_disk.to_str().unwrap(), &boot_mounts(), "qcow-aligned").unwrap();
+    let vm = launch(test_disk.to_str().unwrap(), &boot_mounts(), "qcow-aligned")
+        .await
+        .unwrap();
     let root = RemoteRoot::new(
         ConnectedDisk::new(vm, test_disk.display().to_string()),
         "/boot",
@@ -115,6 +119,7 @@ async fn test_read_nonaligned_file() {
         &boot_mounts(),
         "qcow-nonaligned",
     )
+    .await
     .unwrap();
     let root = RemoteRoot::new(
         ConnectedDisk::new(vm, test_disk.display().to_string()),
