@@ -10,6 +10,7 @@ use std::sync::Once;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 
 #[cfg(test)]
 mod tests;
@@ -152,9 +153,9 @@ pub(super) fn launch(url: &str, mounts: &[(usize, &str)], peer: &str) -> Result<
     Ok(vm)
 }
 
-pub(super) fn connect_client(vsock_path: &Path) -> io::Result<UnixStream> {
+pub(super) async fn connect_client(vsock_path: &Path) -> io::Result<tokio::net::UnixStream> {
     let deadline = Instant::now() + READY_TIMEOUT;
-    handshake(vsock_path, deadline, None)
+    handshake(vsock_path, deadline, None).await
 }
 
 pub(super) fn disk_argument(url: &str) -> Result<String, VmError> {
@@ -232,7 +233,7 @@ pub(super) fn classify_launch_error(hypervisor_log: &str, serial_log: &str, url:
 
 fn wait_until_ready(vm: &mut Vm, url: &str) -> Result<(), VmError> {
     let deadline = Instant::now() + READY_TIMEOUT;
-    match handshake(&vm.vsock_path, deadline, Some(&mut vm.child)) {
+    match blocking_handshake(&vm.vsock_path, deadline, Some(&mut vm.child)) {
         Ok(_stream) => Ok(()),
         Err(error) => {
             let serial = read_log(&vm.serial_path);
@@ -247,7 +248,90 @@ fn wait_until_ready(vm: &mut Vm, url: &str) -> Result<(), VmError> {
     }
 }
 
-fn handshake(
+async fn handshake(
+    vsock_path: &Path,
+    deadline: Instant,
+    mut child: Option<&mut Child>,
+) -> io::Result<tokio::net::UnixStream> {
+    let mut last_error = io::Error::new(io::ErrorKind::TimedOut, "guest did not accept vsock");
+    while Instant::now() < deadline {
+        if let Some(process) = child.as_mut()
+            && let Ok(Some(status)) = process.try_wait()
+        {
+            return Err(io::Error::other(format!(
+                "cloud-hypervisor exited: {status}"
+            )));
+        }
+        // Not tokio::fs::try_exists: polling it through the blocking pool during
+        // the boot measurably slows the transfer that follows (by about 10%).
+        if !vsock_path.exists() {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            continue;
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        let mut stream = match tokio::time::timeout(
+            remaining,
+            tokio::net::UnixStream::connect(vsock_path),
+        )
+        .await
+        {
+            Ok(Ok(stream)) => stream,
+            Ok(Err(error)) => {
+                last_error = error;
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                continue;
+            }
+            Err(_elapsed) => break,
+        };
+        let connect_line = format!("CONNECT {VSOCK_PORT}\n");
+        match tokio::time::timeout(remaining, stream.write_all(connect_line.as_bytes())).await {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => {
+                last_error = error;
+                continue;
+            }
+            Err(_elapsed) => break,
+        }
+        match tokio::time::timeout(remaining, read_async_line(&mut stream, 64)).await {
+            Ok(Ok(line)) if line.starts_with("OK ") => return Ok(stream),
+            Ok(Ok(line)) => {
+                return Err(io::Error::other(format!(
+                    "unexpected vsock handshake: {line}"
+                )));
+            }
+            Ok(Err(error)) => {
+                let timed_out = error.kind() == io::ErrorKind::TimedOut;
+                last_error = error;
+                if timed_out || Instant::now() >= deadline {
+                    break;
+                }
+            }
+            Err(_elapsed) => break,
+        }
+    }
+    Err(last_error)
+}
+
+async fn read_async_line<R: AsyncRead + Unpin>(reader: &mut R, limit: usize) -> io::Result<String> {
+    let mut bytes = Vec::new();
+    loop {
+        let mut byte = [0u8; 1];
+        reader.read_exact(&mut byte).await?;
+        if byte[0] == b'\n' {
+            break;
+        }
+        if bytes.len() == limit {
+            return Err(io::Error::other("vsock handshake line is too long"));
+        }
+        bytes.push(byte[0]);
+    }
+    String::from_utf8(bytes).map_err(|error| io::Error::other(error.to_string()))
+}
+
+fn blocking_handshake(
     vsock_path: &Path,
     deadline: Instant,
     mut child: Option<&mut Child>,
