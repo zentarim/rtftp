@@ -20,11 +20,11 @@ pub(super) fn mk_tmp<T>(test_func: T) -> PathBuf {
     test_tmp_dir
 }
 
-pub(super) fn read_file(opened: &mut FileReader) -> Vec<u8> {
+pub(super) async fn read_file(opened: &mut FileReader) -> Vec<u8> {
     let mut buffer = vec![];
     let mut chunk = vec![0u8; 512];
     loop {
-        let read_size = opened.read_to(&mut chunk).unwrap();
+        let read_size = opened.read_to(&mut chunk).await.unwrap();
         if read_size == 0 {
             break;
         }

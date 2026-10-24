@@ -42,11 +42,11 @@ fn read_until_full(reader: &mut impl Read, buffer: &mut [u8]) -> io::Result<usiz
 }
 
 impl OpenedFile for LocalOpenedFile {
-    fn read_to(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+    async fn read_to(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
         read_until_full(&mut self.rd, buffer)
     }
 
-    fn get_size(&mut self) -> io::Result<usize> {
+    async fn get_size(&mut self) -> io::Result<usize> {
         // stream_position is seek(Current(0)). Start(0) always returns 0 and
         // would rewind a file that has already been read.
         let current_pos = self.rd.stream_position()?;
@@ -68,7 +68,7 @@ impl LocalRoot {
 
 impl Root for LocalRoot {
     type OpenedFile = LocalOpenedFile;
-    fn open(&self, path: &str) -> io::Result<Self::OpenedFile> {
+    async fn open(&self, path: &str) -> io::Result<Self::OpenedFile> {
         let file_path = contained_join(&self.path, path)?;
         let printable_path = file_path.display().to_string();
         let canonical_root = self.path.canonicalize()?;

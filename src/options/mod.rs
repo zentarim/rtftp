@@ -115,8 +115,8 @@ impl TSize {
         options.contains_key(TSIZE)
     }
 
-    pub(super) fn obtain(opened_file: &mut dyn OpenedFile) -> io::Result<Self> {
-        let file_size = opened_file.get_size()?;
+    pub(super) async fn obtain<O: OpenedFile>(opened_file: &mut O) -> io::Result<Self> {
+        let file_size = opened_file.get_size().await?;
         Ok(Self { file_size })
     }
 

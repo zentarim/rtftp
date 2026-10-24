@@ -70,9 +70,9 @@ impl Window {
         self.buffers.len() as u16
     }
 
-    fn push_block(
+    async fn push_block<O: OpenedFile>(
         &mut self,
-        opened_file: &mut dyn OpenedFile,
+        opened_file: &mut O,
         index: u16,
     ) -> io::Result<(usize, bool)> {
         let buffer = self.buffer(index);
@@ -80,7 +80,7 @@ impl Window {
         buffer[1] = DATA as u8;
         buffer[2] = (index >> 8) as u8;
         buffer[3] = index as u8;
-        let read_bytes = opened_file.read_to(&mut buffer[4..])?;
+        let read_bytes = opened_file.read_to(&mut buffer[4..]).await?;
         buffer.truncate(read_bytes + 4);
         Ok((read_bytes, read_bytes < self.block_size as usize))
     }
@@ -116,7 +116,8 @@ async fn send_file<O: OpenedFile>(
         let mut to_send = unacknowledged_count;
         while to_send < window.size() {
             last_read_index = last_read_index.wrapping_add(1);
-            if let Ok((read_bytes, is_last)) = window.push_block(&mut opened_file, last_read_index)
+            if let Ok((read_bytes, is_last)) =
+                window.push_block(&mut opened_file, last_read_index).await
             {
                 to_send += 1;
                 bytes_sent += read_bytes;
@@ -383,7 +384,7 @@ async fn peer_requests_handler(
         };
         send_sessions.insert(
             peer_port,
-            schedule_task(request, datagram_stream, &available_roots, buffer),
+            schedule_task(request, datagram_stream, &available_roots, buffer).await,
         );
     }
     rx_channel.close();
@@ -395,7 +396,7 @@ async fn peer_requests_handler(
     }
 }
 
-fn schedule_task(
+async fn schedule_task(
     request: ReadRequest,
     datagram_stream: DatagramStream,
     available_roots: &[RootKind],
@@ -403,7 +404,7 @@ fn schedule_task(
 ) -> JoinHandle<()> {
     for root in available_roots {
         let error = match root {
-            RootKind::Local(local_root) => match request.open_in(local_root) {
+            RootKind::Local(local_root) => match request.open_in(local_root).await {
                 Ok(opened_local_file) => {
                     return tokio::task::spawn_local(send(
                         opened_local_file,
@@ -414,7 +415,7 @@ fn schedule_task(
                 }
                 Err(err) => err,
             },
-            RootKind::Remote(remote_root) => match request.open_in(remote_root) {
+            RootKind::Remote(remote_root) => match request.open_in(remote_root).await {
                 Ok(opened_local_file) => {
                     return tokio::task::spawn_local(send(
                         opened_local_file,
@@ -600,7 +601,7 @@ async fn negotiate_options<O: OpenedFile>(
         }
     };
     if TSize::is_requested(options) {
-        match TSize::obtain(opened_file) {
+        match TSize::obtain(opened_file).await {
             Ok(tsize) => oack.push(tsize.as_key_pair()),
             Err(err) => {
                 eprintln!("{datagram_stream}: Can't obtain TSize due to {err:?}")
