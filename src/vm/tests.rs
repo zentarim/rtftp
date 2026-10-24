@@ -1,6 +1,6 @@
 use super::{
     VmError, classify_launch_error, connect_client, disk_argument, guest_cmdline, kernel_path,
-    launch,
+    launch, take_prefixed_lines, take_prefixed_remainder,
 };
 use crate::fs::{OpenedFile, Root};
 use crate::remote_fs::{ConnectedDisk, RemoteRoot};
@@ -58,6 +58,37 @@ fn kernel_path_prefers_boot_image_then_prefixed_then_vmlinuz() {
         kernel_path("quiet", fallback).unwrap(),
         Path::new("/boot/vmlinuz")
     );
+}
+
+#[test]
+fn prefixed_lines_split_chunks_and_keep_a_partial_tail() {
+    let peer = "10.1.0.225";
+    let mut pending = Vec::new();
+    let first = take_prefixed_lines(
+        &mut pending,
+        b"cloud-hypervisor: warn\nError: boot\n[    0.000000] Linux",
+        peer,
+    );
+    assert_eq!(
+        first,
+        vec![
+            "10.1.0.225: cloud-hypervisor: warn".to_string(),
+            "10.1.0.225: Error: boot".to_string(),
+        ]
+    );
+    assert_eq!(pending, b"[    0.000000] Linux");
+
+    let second = take_prefixed_lines(&mut pending, b" version\npartial", peer);
+    assert_eq!(
+        second,
+        vec!["10.1.0.225: [    0.000000] Linux version".to_string()]
+    );
+    assert_eq!(
+        take_prefixed_remainder(&mut pending, peer).as_deref(),
+        Some("10.1.0.225: partial")
+    );
+    assert!(pending.is_empty());
+    assert_eq!(take_prefixed_remainder(&mut pending, peer), None);
 }
 
 #[test]
