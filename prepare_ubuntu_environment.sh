@@ -2,7 +2,7 @@
 set -eux
 cd "${0%/*}"
 
-apt-get install -y gcc libguestfs-dev guestfs-tools nbd-client
+apt-get install -y gcc guestfs-tools nbd-client cpio qemu-utils zstd xz-utils
 
 source /etc/os-release
 
