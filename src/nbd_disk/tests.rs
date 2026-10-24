@@ -56,17 +56,17 @@ async fn open_existing_file() {
     let nbd_process = run_nbd_server("127.0.0.2");
     let disk = attach_nbd_disk(nbd_process.get_url()).unwrap();
     let file = "/boot/aligned.file";
-    let opened = disk.open(file);
+    let opened = disk.open(file).await;
     assert!(opened.is_ok());
     assert_eq!(opened.unwrap().get_size().await.unwrap(), 4194304);
 }
 
-#[test]
-fn open_non_existing_file() {
+#[tokio::test(flavor = "current_thread")]
+async fn open_non_existing_file() {
     let nbd_process = run_nbd_server("127.0.0.2");
     let disk = attach_nbd_disk(nbd_process.get_url()).unwrap();
     let file = "/nonexisting/file";
-    let result = disk.open(file);
+    let result = disk.open(file).await;
     assert_eq!(result.err().unwrap().kind(), ErrorKind::NotFound);
 }
 
