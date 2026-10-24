@@ -16,6 +16,15 @@ jobs:
       - name: Prepare environment
         run: sudo apt update && sudo ./prepare_ubuntu_environment.sh && sudo chmod o+r "$(readlink -f /boot/vmlinuz)" && sudo chmod 0666 /dev/kvm
 
+      - name: Install musl target
+        run: rustup target add x86_64-unknown-linux-musl
+
+      - name: Build cloud-hypervisor
+        run: make cloud-hypervisor CLOUD_HYPERVISOR_REPO=https://github.com/zentarim/cloud-hypervisor.git
+
+      - name: Build storekeeper
+        run: make storekeeper
+
       - name: Run linter
         run: make lint
 

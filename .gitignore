@@ -2,3 +2,4 @@
 /Cargo.lock
 /.idea/
 /tests/*.qcow2
+/third_party/
