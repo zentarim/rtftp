@@ -1,3 +1,7 @@
+[workspace]
+members = [".", "file-protocol"]
+resolver = "3"
+
 [package]
 name = "rtftp"
 version = "0.5.0"

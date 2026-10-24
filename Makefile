@@ -16,7 +16,7 @@ release:
 	cargo build --release
 
 test:
-	cargo test --release -- --test-threads ${TEST_THREADS}
+	cargo test --release --workspace -- --test-threads ${TEST_THREADS}
 
 bench-download:
 	cargo test --release --test test_download_time -- --ignored --test-threads 1 --nocapture
