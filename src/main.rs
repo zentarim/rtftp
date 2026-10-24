@@ -1,13 +1,12 @@
 #[cfg(windows)]
 compile_error!(
-    "This project does not support building on Windows due to its reliance on libguestfs and inotify."
+    "This project does not support building on Windows due to its reliance on virtio-vsock and inotify."
 );
 mod cursor;
 mod datagram_stream;
 mod error;
 mod fs;
 mod fs_watch;
-mod guestfs;
 mod local_fs;
 mod messages;
 mod nbd_disk;
@@ -17,6 +16,7 @@ mod remote_fs;
 mod server;
 #[cfg(test)]
 mod tests_common;
+mod vm;
 
 use crate::fs_watch::Watch;
 use clap::Parser;
