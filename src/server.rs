@@ -57,7 +57,7 @@ impl TFTPServer {
                             self.max_idle_time,
                         );
                         if let Some(previous_handler) = self.peer_handlers.insert(remote_ip, new_handler) {
-                            previous_handler.shutdown();
+                            previous_handler.shutdown().await;
                         }
                     }
                 }
@@ -92,6 +92,12 @@ impl TFTPServer {
         }
     }
 
+    pub(super) async fn shutdown(&mut self) {
+        for (_addr, handler) in self.peer_handlers.drain() {
+            handler.shutdown().await;
+        }
+    }
+
     async fn handle_request(&mut self, size: usize, remote: SocketAddr) {
         match ReadRequest::parse(&self.buffer[..size]) {
             Ok(rrq) => {
@@ -109,7 +115,7 @@ impl TFTPServer {
                 if !handler.feed(remote.port(), rrq).await {
                     eprintln!("{handler}: Failed to feed. Shutting down ...");
                     if let Some(handler) = self.peer_handlers.remove(&remote_ip) {
-                        handler.shutdown();
+                        handler.shutdown().await;
                     }
                 }
             }
@@ -132,13 +138,5 @@ impl TFTPServer {
 impl Display for TFTPServer {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.display)
-    }
-}
-
-impl Drop for TFTPServer {
-    fn drop(&mut self) {
-        for (_addr, handler) in self.peer_handlers.drain() {
-            handler.shutdown()
-        }
     }
 }
