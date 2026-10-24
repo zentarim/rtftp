@@ -3,7 +3,6 @@ use crate::vm::{VmError, launch};
 use serde::Deserialize;
 use serde_json::{Value, from_value};
 use std::fmt::Debug;
-use std::fs;
 use std::path::{Path, PathBuf};
 
 #[cfg(test)]
@@ -13,16 +12,16 @@ mod tests;
 const BOOT_MOUNTS: [(usize, &str); 2] = [(2, "/"), (1, "/boot")];
 
 #[cfg(test)]
-fn attach_nbd_disk<U: AsRef<str>>(url: U) -> Result<ConnectedDisk, VmError> {
-    attach_mounted(url.as_ref(), "test", &BOOT_MOUNTS)
+async fn attach_nbd_disk<U: AsRef<str>>(url: U) -> Result<ConnectedDisk, VmError> {
+    attach_mounted(url.as_ref(), "test", &BOOT_MOUNTS).await
 }
 
-fn attach_mounted(
+async fn attach_mounted(
     url: &str,
     peer: &str,
     mounts: &[(usize, &str)],
 ) -> Result<ConnectedDisk, VmError> {
-    let vm = launch(url, mounts, peer)?;
+    let vm = launch(url, mounts, peer).await?;
     Ok(ConnectedDisk::new(vm, url.to_string()))
 }
 
@@ -43,7 +42,7 @@ impl<'a> Config<'a> for NBDConfig {
             }
         }
     }
-    fn connect(&self, peer: &str) -> Result<RemoteRoot, VirtualRootError> {
+    async fn connect(&self, peer: &str) -> Result<RemoteRoot, VirtualRootError> {
         if !self.url.starts_with("nbd://") {
             return Err(VirtualRootError::ConfigError(format!(
                 "Invalid NBD URL: {}",
@@ -55,7 +54,7 @@ impl<'a> Config<'a> for NBDConfig {
             .iter()
             .map(|mount| (mount.partition(), mount.mountpoint()))
             .collect::<Vec<_>>();
-        let disk = match attach_mounted(&self.url, peer, &mounts) {
+        let disk = match attach_mounted(&self.url, peer, &mounts).await {
             Ok(disk) => disk,
             Err(error) => return Err(VirtualRootError::SetupError(error)),
         };
@@ -69,16 +68,17 @@ pub(super) enum NbdRoot {
     Unusable,
 }
 
-pub(super) fn open_nbd_root(tftp_root: &Path, ip: &str) -> NbdRoot {
+pub(super) async fn open_nbd_root(tftp_root: &Path, ip: &str) -> NbdRoot {
     eprintln!("Looking for TFTP root configs in {tftp_root:?} ...");
     let Some(file_path) = files_sorted(tftp_root)
+        .await
         .into_iter()
         .find(|file_path| match_ip(file_path, ip))
     else {
         return NbdRoot::Absent;
     };
     eprintln!("Found TFTP root config {file_path:?}");
-    let Some(json_struct) = read_json(&file_path) else {
+    let Some(json_struct) = read_json(&file_path).await else {
         eprintln!("Can't read JSON config {file_path:?}");
         return NbdRoot::Unusable;
     };
@@ -87,7 +87,7 @@ pub(super) fn open_nbd_root(tftp_root: &Path, ip: &str) -> NbdRoot {
         return NbdRoot::Unusable;
     };
     eprintln!("Found NBD TFTP root config {file_path:?}");
-    match nbd_config.connect(ip) {
+    match nbd_config.connect(ip).await {
         Ok(disk) => {
             eprintln!("Connected config {file_path:?}");
             NbdRoot::Connected(disk)
@@ -103,20 +103,26 @@ pub(super) fn open_nbd_root(tftp_root: &Path, ip: &str) -> NbdRoot {
     }
 }
 
-fn files_sorted<P: AsRef<Path>>(parent: P) -> Vec<PathBuf> {
-    let mut files = fs::read_dir(parent)
-        .into_iter()
-        .flatten()
-        .filter_map(|entry| {
-            if let Ok(entry) = entry {
+async fn files_sorted<P: AsRef<Path>>(parent: P) -> Vec<PathBuf> {
+    let mut files = Vec::new();
+    let Ok(mut entries) = tokio::fs::read_dir(parent).await else {
+        return files;
+    };
+    loop {
+        match entries.next_entry().await {
+            Ok(Some(entry)) => {
                 let path = entry.path();
-                if path.is_file() {
-                    return Some(path);
-                };
-            };
-            None
-        })
-        .collect::<Vec<_>>();
+                if tokio::fs::metadata(&path)
+                    .await
+                    .is_ok_and(|metadata| metadata.is_file())
+                {
+                    files.push(path);
+                }
+            }
+            Ok(None) => break,
+            Err(_error) => continue,
+        }
+    }
     files.sort();
     files
 }
@@ -131,11 +137,9 @@ fn match_ip(path: &Path, ip: &str) -> bool {
     address == ip
 }
 
-fn read_json(path: &Path) -> Option<Value> {
-    if let Ok(content) = fs::read_to_string(path)
-        && let Ok(json_struct) = serde_json::from_str::<Value>(&content)
-    {
-        return Some(json_struct);
-    }
-    None
+async fn read_json(path: &Path) -> Option<Value> {
+    let Ok(content) = tokio::fs::read_to_string(path).await else {
+        return None;
+    };
+    serde_json::from_str::<Value>(&content).ok()
 }

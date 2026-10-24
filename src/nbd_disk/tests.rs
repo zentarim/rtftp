@@ -9,11 +9,11 @@ use std::{fs, time};
 
 include!("../../tests/common/nbd_server.rs");
 
-#[test]
-fn test_add_nbd_disk() {
+#[tokio::test(flavor = "current_thread")]
+async fn test_add_nbd_disk() {
     let nbd_process = run_nbd_server("127.0.0.2");
     let start_time = time::Instant::now();
-    let result = attach_nbd_disk(nbd_process.get_url());
+    let result = attach_nbd_disk(nbd_process.get_url()).await;
     assert!(
         result.is_ok(),
         "Expected Ok, got Err: {:?}",
@@ -29,21 +29,21 @@ fn test_add_nbd_disk() {
     drop(nbd_process);
 }
 
-#[test]
-fn test_add_non_existing_share_disk() {
+#[tokio::test(flavor = "current_thread")]
+async fn test_add_non_existing_share_disk() {
     let nbd_process = run_nbd_server("127.0.0.2");
     let non_existing_share = "non_existing_share";
     let (url_prefix, _existing_share) = nbd_process.get_url().rsplit_once("/").unwrap();
     let non_exising_share = vec![url_prefix, non_existing_share].join("/");
-    let result = attach_nbd_disk(non_exising_share);
+    let result = attach_nbd_disk(non_exising_share).await;
     assert!(result.is_err(), "Unexpected success received");
     assert!(matches!(result.err().unwrap(), VmError::ShareNotFound(_)))
 }
 
-#[test]
-fn test_add_invalid_url() {
+#[tokio::test(flavor = "current_thread")]
+async fn test_add_invalid_url() {
     let non_existent_nbd_url = "nbd://127.1.1.1:1/invalid";
-    let result = attach_nbd_disk(non_existent_nbd_url);
+    let result = attach_nbd_disk(non_existent_nbd_url).await;
     assert!(result.is_err());
     assert!(matches!(
         result.err().unwrap(),
@@ -54,7 +54,7 @@ fn test_add_invalid_url() {
 #[tokio::test(flavor = "current_thread")]
 async fn open_existing_file() {
     let nbd_process = run_nbd_server("127.0.0.2");
-    let disk = attach_nbd_disk(nbd_process.get_url()).unwrap();
+    let disk = attach_nbd_disk(nbd_process.get_url()).await.unwrap();
     let file = "/boot/aligned.file";
     let opened = disk.open(file).await;
     assert!(opened.is_ok());
@@ -64,7 +64,7 @@ async fn open_existing_file() {
 #[tokio::test(flavor = "current_thread")]
 async fn open_non_existing_file() {
     let nbd_process = run_nbd_server("127.0.0.2");
-    let disk = attach_nbd_disk(nbd_process.get_url()).unwrap();
+    let disk = attach_nbd_disk(nbd_process.get_url()).await.unwrap();
     let file = "/nonexisting/file";
     let result = disk.open(file).await;
     assert_eq!(result.err().unwrap().kind(), ErrorKind::NotFound);
@@ -73,7 +73,7 @@ async fn open_non_existing_file() {
 #[tokio::test(flavor = "current_thread")]
 async fn read_existing_aligned_file() {
     let nbd_process = run_nbd_server("127.0.0.2");
-    let disk = attach_nbd_disk(nbd_process.get_url()).unwrap();
+    let disk = attach_nbd_disk(nbd_process.get_url()).await.unwrap();
     let chroot = RemoteRoot::new(disk, "/boot");
     let file = "aligned.file";
     let mut opened = chroot.open(file).await.unwrap();
@@ -85,7 +85,7 @@ async fn read_existing_aligned_file() {
 #[tokio::test(flavor = "current_thread")]
 async fn read_existing_nonaligned_file() {
     let nbd_process = run_nbd_server("127.0.0.2");
-    let disk = attach_nbd_disk(nbd_process.get_url()).unwrap();
+    let disk = attach_nbd_disk(nbd_process.get_url()).await.unwrap();
     let chroot = RemoteRoot::new(disk, "/boot");
     let file = "nonaligned.file";
     let mut opened = chroot.open(file).await.unwrap();
@@ -94,17 +94,17 @@ async fn read_existing_nonaligned_file() {
     assert_eq!(read_data, expected_data);
 }
 
-#[test]
-fn missing_config_is_absent() {
+#[tokio::test(flavor = "current_thread")]
+async fn missing_config_is_absent() {
     let tftp_root = mk_tmp(missing_config_is_absent);
     assert!(matches!(
-        open_nbd_root(&tftp_root, "10.0.0.1"),
+        open_nbd_root(&tftp_root, "10.0.0.1").await,
         NbdRoot::Absent
     ));
 }
 
-#[test]
-fn invalid_config_is_unusable() {
+#[tokio::test(flavor = "current_thread")]
+async fn invalid_config_is_unusable() {
     let tftp_root = mk_tmp(invalid_config_is_unusable);
     fs::write(
         tftp_root.join("10.0.0.1.nbd"),
@@ -112,7 +112,7 @@ fn invalid_config_is_unusable() {
     )
     .unwrap();
     assert!(matches!(
-        open_nbd_root(&tftp_root, "10.0.0.1"),
+        open_nbd_root(&tftp_root, "10.0.0.1").await,
         NbdRoot::Unusable
     ));
 }
@@ -146,8 +146,8 @@ fn build_config() {
     assert!(nbd_config.is_some());
 }
 
-#[test]
-fn connect_from_config() {
+#[tokio::test(flavor = "current_thread")]
+async fn connect_from_config() {
     let nbd_process = run_nbd_server("127.0.0.2");
     let config = json!({
         "url": nbd_process.get_url(),
@@ -165,6 +165,6 @@ fn connect_from_config() {
     }
     );
     let nbd_config = NBDConfig::from_json(&config).unwrap();
-    let running_disk = nbd_config.connect("10.0.0.1");
+    let running_disk = nbd_config.connect("10.0.0.1").await;
     assert!(running_disk.is_ok());
 }
