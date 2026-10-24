@@ -1,12 +1,13 @@
 use crate::fs::{OpenedFile, Root, contained_join};
 use crate::vm::{Vm, VmError, connect_client};
-use file_protocol::{FILE_NOT_FOUND, MAX_CHUNK_SIZE, Reply, read_chunk, read_reply, write_request};
+use file_protocol::{FILE_NOT_FOUND, MAX_CHUNK_SIZE};
 use serde::Deserialize;
 use serde_json::Value;
 use std::fmt::{Debug, Display, Formatter};
-use std::io::{self, Write};
-use std::os::unix::net::UnixStream;
+use std::io;
 use std::path::PathBuf;
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::net::UnixStream;
 
 #[cfg(test)]
 mod tests;
@@ -29,7 +30,7 @@ impl Root for RemoteRoot {
     type OpenedFile = FileReader;
     async fn open(&self, path: &str) -> io::Result<Self::OpenedFile> {
         let full_path = contained_join(&self.chroot_path, path)?;
-        self.disk.open(full_path.to_str().unwrap())
+        self.disk.open(full_path.to_str().unwrap()).await
     }
 }
 
@@ -121,20 +122,14 @@ pub(super) struct FileReader {
 }
 
 impl FileReader {
-    fn open(vsock_path: &std::path::Path, path: &str, display: String) -> io::Result<Self> {
-        let mut stream = connect_client(vsock_path)?;
-        write_request(&mut stream, path, MAX_CHUNK_SIZE)?;
-        stream.flush()?;
-        let file_size = match read_reply(&mut stream)? {
-            Reply::Info(size) => {
-                usize::try_from(size).map_err(|_| io::Error::other("file size exceeds usize"))?
-            }
-            Reply::Error(text) if text == FILE_NOT_FOUND => {
-                return Err(io::ErrorKind::NotFound.into());
-            }
-            Reply::Error(text) => return Err(io::Error::other(text)),
-        };
-        let first_chunk = read_chunk(&mut stream)?;
+    async fn open(vsock_path: &std::path::Path, path: &str, display: String) -> io::Result<Self> {
+        let mut stream = UnixStream::from_std(connect_client(vsock_path)?)?;
+        write_request(&mut stream, path, MAX_CHUNK_SIZE).await?;
+        stream.flush().await?;
+        let size = read_reply(&mut stream).await?;
+        let file_size =
+            usize::try_from(size).map_err(|_| io::Error::other("file size exceeds usize"))?;
+        let first_chunk = read_chunk(&mut stream).await?;
         Ok(Self {
             stream,
             file_size,
@@ -144,8 +139,8 @@ impl FileReader {
         })
     }
 
-    fn buffer_new_chunk(&mut self) -> io::Result<bool> {
-        let next_chunk = read_chunk(&mut self.stream)?;
+    async fn buffer_new_chunk(&mut self) -> io::Result<bool> {
+        let next_chunk = read_chunk(&mut self.stream).await?;
         if next_chunk.is_empty() {
             Ok(false)
         } else {
@@ -167,7 +162,7 @@ impl OpenedFile for FileReader {
         while self.current_offset < self.file_size && read < buffer.len() {
             let copied = self.chunk.fill(&mut buffer[read..]);
             if copied == 0 {
-                let chunk_has_data = self.buffer_new_chunk()?;
+                let chunk_has_data = self.buffer_new_chunk().await?;
                 if !chunk_has_data {
                     break;
                 }
@@ -208,147 +203,137 @@ impl ConnectedDisk {
         Self { vm: None, url }
     }
 
-    pub(super) fn open(&self, absolute_path: &str) -> io::Result<FileReader> {
+    pub(super) async fn open(&self, absolute_path: &str) -> io::Result<FileReader> {
         let Some(vm) = &self.vm else {
             return Err(io::Error::other("disk is not connected"));
         };
         let display = format!("<{absolute_path} on {self}>");
-        FileReader::open(vm.vsock_path(), absolute_path, display)
+        FileReader::open(vm.vsock_path(), absolute_path, display).await
     }
 }
 
-#[cfg(test)]
-mod framing {
-    use super::{FILE_NOT_FOUND, MAX_CHUNK_SIZE};
-    use std::io;
-    use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+const PATH_LIMIT: usize = 4096;
+const TEXT_LIMIT: usize = 1024;
+const SIZE_LIMIT: usize = 20;
 
-    const PATH_LIMIT: usize = 4096;
-    const TEXT_LIMIT: usize = 1024;
-    const SIZE_LIMIT: usize = 20;
-
-    pub(super) async fn write_request<W: AsyncWrite + Unpin>(
-        writer: &mut W,
-        path: &str,
-        chunk_size: usize,
-    ) -> io::Result<()> {
-        if path.is_empty() || path.contains('\0') {
-            return Err(io::Error::other("path is empty or contains NUL"));
-        }
-        if path.len() > PATH_LIMIT {
-            return Err(io::Error::other("path is too long"));
-        }
-        if chunk_size == 0 || chunk_size > MAX_CHUNK_SIZE {
-            return Err(io::Error::other("invalid SEND"));
-        }
-        write_opcode(writer, b"FILE").await?;
-        write_cstr(writer, path).await?;
-        write_opcode(writer, b"SEND").await?;
-        write_cstr(writer, &chunk_size.to_string()).await?;
-        Ok(())
+async fn write_request<W: AsyncWrite + Unpin>(
+    writer: &mut W,
+    path: &str,
+    chunk_size: usize,
+) -> io::Result<()> {
+    if path.is_empty() || path.contains('\0') {
+        return Err(io::Error::other("path is empty or contains NUL"));
     }
-
-    pub(super) async fn read_reply<R: AsyncRead + Unpin>(reader: &mut R) -> io::Result<u64> {
-        let opcode = read_opcode(reader).await?;
-        if opcode == *b"INFO" {
-            let size_text = read_cstr(reader, SIZE_LIMIT).await?;
-            return parse_size(&size_text).ok_or_else(|| io::Error::other("invalid INFO size"));
-        }
-        if opcode == *b"ERRO" {
-            let text = read_cstr(reader, TEXT_LIMIT).await?;
-            if text == FILE_NOT_FOUND {
-                return Err(io::ErrorKind::NotFound.into());
-            }
-            return Err(io::Error::other(text));
-        }
-        Err(io::Error::other(format!(
-            "expected INFO or ERRO, got {}",
-            opcode_text(&opcode)
-        )))
+    if path.len() > PATH_LIMIT {
+        return Err(io::Error::other("path is too long"));
     }
+    if chunk_size == 0 || chunk_size > MAX_CHUNK_SIZE {
+        return Err(io::Error::other("invalid SEND"));
+    }
+    write_opcode(writer, b"FILE").await?;
+    write_cstr(writer, path).await?;
+    write_opcode(writer, b"SEND").await?;
+    write_cstr(writer, &chunk_size.to_string()).await?;
+    Ok(())
+}
 
-    pub(super) async fn read_chunk<R: AsyncRead + Unpin>(reader: &mut R) -> io::Result<Vec<u8>> {
-        let opcode = read_opcode(reader).await?;
-        if opcode == *b"ERRO" {
-            let text = read_cstr(reader, TEXT_LIMIT).await?;
-            return Err(io::Error::other(text));
-        }
-        if opcode != *b"CHNK" {
-            return Err(io::Error::other(format!(
-                "expected CHNK, got {}",
-                opcode_text(&opcode)
-            )));
-        }
+async fn read_reply<R: AsyncRead + Unpin>(reader: &mut R) -> io::Result<u64> {
+    let opcode = read_opcode(reader).await?;
+    if opcode == *b"INFO" {
         let size_text = read_cstr(reader, SIZE_LIMIT).await?;
-        let size = parse_size(&size_text).ok_or_else(|| io::Error::other("invalid chunk size"))?;
-        if size > MAX_CHUNK_SIZE as u64 {
-            return Err(io::Error::other("chunk exceeds MAX_CHUNK_SIZE"));
-        }
-        let mut data = vec![0u8; size as usize];
-        if size > 0 {
-            reader.read_exact(&mut data).await?;
-        }
-        let mut trailer = [0u8; 1];
-        reader.read_exact(&mut trailer).await?;
-        if trailer[0] != 0 {
-            return Err(io::Error::other("chunk is missing its trailing NUL"));
-        }
-        Ok(data)
+        return parse_size(&size_text).ok_or_else(|| io::Error::other("invalid INFO size"));
     }
+    if opcode == *b"ERRO" {
+        let text = read_cstr(reader, TEXT_LIMIT).await?;
+        if text == FILE_NOT_FOUND {
+            return Err(io::ErrorKind::NotFound.into());
+        }
+        return Err(io::Error::other(text));
+    }
+    Err(io::Error::other(format!(
+        "expected INFO or ERRO, got {}",
+        opcode_text(&opcode)
+    )))
+}
 
-    async fn write_opcode<W: AsyncWrite + Unpin>(
-        writer: &mut W,
-        opcode: &[u8; 4],
-    ) -> io::Result<()> {
-        writer.write_all(opcode).await?;
-        writer.write_all(&[0]).await?;
-        Ok(())
+async fn read_chunk<R: AsyncRead + Unpin>(reader: &mut R) -> io::Result<Vec<u8>> {
+    let opcode = read_opcode(reader).await?;
+    if opcode == *b"ERRO" {
+        let text = read_cstr(reader, TEXT_LIMIT).await?;
+        return Err(io::Error::other(text));
     }
-
-    async fn write_cstr<W: AsyncWrite + Unpin>(writer: &mut W, text: &str) -> io::Result<()> {
-        writer.write_all(text.as_bytes()).await?;
-        writer.write_all(&[0]).await?;
-        Ok(())
+    if opcode != *b"CHNK" {
+        return Err(io::Error::other(format!(
+            "expected CHNK, got {}",
+            opcode_text(&opcode)
+        )));
     }
+    let size_text = read_cstr(reader, SIZE_LIMIT).await?;
+    let size = parse_size(&size_text).ok_or_else(|| io::Error::other("invalid chunk size"))?;
+    if size > MAX_CHUNK_SIZE as u64 {
+        return Err(io::Error::other("chunk exceeds MAX_CHUNK_SIZE"));
+    }
+    let mut data = vec![0u8; size as usize];
+    if size > 0 {
+        reader.read_exact(&mut data).await?;
+    }
+    let mut trailer = [0u8; 1];
+    reader.read_exact(&mut trailer).await?;
+    if trailer[0] != 0 {
+        return Err(io::Error::other("chunk is missing its trailing NUL"));
+    }
+    Ok(data)
+}
 
-    async fn read_opcode<R: AsyncRead + Unpin>(reader: &mut R) -> io::Result<[u8; 4]> {
-        let mut opcode = [0u8; 4];
-        reader.read_exact(&mut opcode).await?;
-        let mut terminator = [0u8; 1];
-        reader.read_exact(&mut terminator).await?;
-        if terminator[0] != 0 {
-            return Err(io::Error::other("opcode is not NUL terminated"));
+async fn write_opcode<W: AsyncWrite + Unpin>(writer: &mut W, opcode: &[u8; 4]) -> io::Result<()> {
+    writer.write_all(opcode).await?;
+    writer.write_all(&[0]).await?;
+    Ok(())
+}
+
+async fn write_cstr<W: AsyncWrite + Unpin>(writer: &mut W, text: &str) -> io::Result<()> {
+    writer.write_all(text.as_bytes()).await?;
+    writer.write_all(&[0]).await?;
+    Ok(())
+}
+
+async fn read_opcode<R: AsyncRead + Unpin>(reader: &mut R) -> io::Result<[u8; 4]> {
+    let mut opcode = [0u8; 4];
+    reader.read_exact(&mut opcode).await?;
+    let mut terminator = [0u8; 1];
+    reader.read_exact(&mut terminator).await?;
+    if terminator[0] != 0 {
+        return Err(io::Error::other("opcode is not NUL terminated"));
+    }
+    Ok(opcode)
+}
+
+async fn read_cstr<R: AsyncRead + Unpin>(reader: &mut R, limit: usize) -> io::Result<String> {
+    let mut bytes = Vec::new();
+    loop {
+        let mut byte = [0u8; 1];
+        reader.read_exact(&mut byte).await?;
+        if byte[0] == 0 {
+            break;
         }
-        Ok(opcode)
-    }
-
-    async fn read_cstr<R: AsyncRead + Unpin>(reader: &mut R, limit: usize) -> io::Result<String> {
-        let mut bytes = Vec::new();
-        loop {
-            let mut byte = [0u8; 1];
-            reader.read_exact(&mut byte).await?;
-            if byte[0] == 0 {
-                break;
-            }
-            if bytes.len() == limit {
-                return Err(io::Error::other("field is too long"));
-            }
-            bytes.push(byte[0]);
+        if bytes.len() == limit {
+            return Err(io::Error::other("field is too long"));
         }
-        String::from_utf8(bytes).map_err(|_| io::Error::other("field is not utf-8"))
+        bytes.push(byte[0]);
     }
+    String::from_utf8(bytes).map_err(|_| io::Error::other("field is not utf-8"))
+}
 
-    fn parse_size(text: &str) -> Option<u64> {
-        if text.is_empty() || !text.bytes().all(|byte| byte.is_ascii_digit()) {
-            return None;
-        }
-        if text.len() > 1 && text.starts_with('0') {
-            return None;
-        }
-        text.parse().ok()
+fn parse_size(text: &str) -> Option<u64> {
+    if text.is_empty() || !text.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
     }
+    if text.len() > 1 && text.starts_with('0') {
+        return None;
+    }
+    text.parse().ok()
+}
 
-    fn opcode_text(opcode: &[u8; 4]) -> String {
-        String::from_utf8_lossy(opcode).into_owned()
-    }
+fn opcode_text(opcode: &[u8; 4]) -> String {
+    String::from_utf8_lossy(opcode).into_owned()
 }
