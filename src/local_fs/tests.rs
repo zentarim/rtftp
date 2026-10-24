@@ -1,9 +1,12 @@
 use super::*;
 use crate::tests_common::mk_tmp;
 use std::fs::{Permissions, create_dir, set_permissions, write};
-use std::io::{self, ErrorKind, Read};
+use std::io::ErrorKind;
 use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::PathBuf;
+use std::pin::Pin;
+use std::task::{Context, Poll};
+use tokio::io::{AsyncRead, ReadBuf};
 
 /// First `read` returns `first_count` bytes. The next `read` returns the rest.
 struct ShortThenRest {
@@ -13,22 +16,26 @@ struct ShortThenRest {
     reads: usize,
 }
 
-impl Read for ShortThenRest {
-    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+impl AsyncRead for ShortThenRest {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        _context: &mut Context<'_>,
+        buffer: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
         let remaining = self.data.len() - self.offset;
-        if remaining == 0 || buffer.is_empty() {
-            return Ok(0);
+        if remaining == 0 || buffer.remaining() == 0 {
+            return Poll::Ready(Ok(()));
         }
         let max_count = if self.reads == 0 {
             self.first_count
         } else {
             remaining
         };
-        let count = max_count.min(buffer.len()).min(remaining);
-        buffer[..count].copy_from_slice(&self.data[self.offset..self.offset + count]);
+        let count = max_count.min(buffer.remaining()).min(remaining);
+        buffer.put_slice(&self.data[self.offset..self.offset + count]);
         self.offset += count;
         self.reads += 1;
-        Ok(count)
+        Poll::Ready(Ok(()))
     }
 }
 
@@ -77,8 +84,8 @@ async fn get_size_keeps_read_position() {
     assert_eq!(&rest[..read_size], b"efghij");
 }
 
-#[test]
-fn read_until_full_after_short_read() {
+#[tokio::test(flavor = "current_thread")]
+async fn read_until_full_after_short_read() {
     let payload = b"short-then-rest-payload";
     let mut reader = ShortThenRest {
         data: payload.to_vec(),
@@ -87,7 +94,7 @@ fn read_until_full_after_short_read() {
         reads: 0,
     };
     let mut buffer = [0xA5u8; 64];
-    let read_size = read_until_full(&mut reader, &mut buffer).unwrap();
+    let read_size = read_until_full(&mut reader, &mut buffer).await.unwrap();
     assert_eq!(read_size, payload.len());
     assert_eq!(&buffer[..read_size], payload);
     assert_eq!(reader.reads, 2);
