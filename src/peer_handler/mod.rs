@@ -13,6 +13,7 @@ use std::fmt::{Debug, Display, Formatter};
 use std::io;
 use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::time::{Duration, Instant};
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
@@ -334,7 +335,7 @@ async fn peer_requests_handler(
     mut rx_channel: Receiver<(u16, ReadRequest)>,
     idle_timeout: Duration,
 ) {
-    let available_roots = roots_for_peer(&tftp_root, &peer.to_string()).await;
+    let available_roots = Rc::new(roots_for_peer(&tftp_root, &peer.to_string()).await);
     let mut send_sessions: HashMap<u16, JoinHandle<()>> =
         HashMap::with_capacity(MAX_SESSIONS_PER_IP);
     let mut last_active = Instant::now();
@@ -369,17 +370,19 @@ async fn peer_requests_handler(
                 panic!("Can't bind to address {local_address} to random port dues to {err}")
             });
         let datagram_stream = DatagramStream::new(local_socket, SocketAddr::new(peer, peer_port));
-        let mut buffer: Vec<u8> = vec![0; u16::MAX as usize];
+        let buffer: Vec<u8> = vec![0; u16::MAX as usize];
         send_sessions.retain(|_peer_port, handle| !handle.is_finished());
-        if send_sessions.len() >= send_sessions.capacity() {
+        if send_sessions.len() >= MAX_SESSIONS_PER_IP {
             let error_message = "Maximum sessions per IP exceeded";
             eprintln!("{peer}: {error_message}");
             let tftp_error = TFTPError::undefined(error_message);
-            fire_error(tftp_error, &datagram_stream, &mut buffer).await;
+            fire_error(tftp_error, &datagram_stream, buffer).await;
+            continue;
         };
+        let roots = Rc::clone(&available_roots);
         send_sessions.insert(
             peer_port,
-            schedule_task(request, datagram_stream, &available_roots, buffer).await,
+            tokio::task::spawn_local(serve_request(request, datagram_stream, roots, buffer)),
         );
     }
     rx_channel.close();
@@ -392,33 +395,37 @@ async fn peer_requests_handler(
     eprintln!("{peer}: Handler closed");
 }
 
-async fn schedule_task(
+async fn serve_request(
     request: ReadRequest,
     datagram_stream: DatagramStream,
-    available_roots: &[RootKind],
+    available_roots: Rc<Vec<RootKind>>,
     buffer: Vec<u8>,
-) -> JoinHandle<()> {
-    for root in available_roots {
+) {
+    for root in available_roots.iter() {
         let error = match root {
             RootKind::Local(local_root) => match request.open_in(local_root).await {
-                Ok(opened_local_file) => {
-                    return tokio::task::spawn_local(send(
-                        opened_local_file,
+                Ok(opened_file) => {
+                    send(
+                        opened_file,
                         datagram_stream,
                         request.yield_options(),
                         buffer,
-                    ));
+                    )
+                    .await;
+                    return;
                 }
                 Err(err) => err,
             },
             RootKind::Remote(remote_root) => match request.open_in(remote_root).await {
-                Ok(opened_local_file) => {
-                    return tokio::task::spawn_local(send(
-                        opened_local_file,
+                Ok(opened_file) => {
+                    send(
+                        opened_file,
                         datagram_stream,
                         request.yield_options(),
                         buffer,
-                    ));
+                    )
+                    .await;
+                    return;
                 }
                 Err(err) => err,
             },
@@ -426,26 +433,21 @@ async fn schedule_task(
         match error.kind() {
             io::ErrorKind::NotFound => continue,
             io::ErrorKind::PermissionDenied => {
-                return tokio::task::spawn_local(fire_error(
-                    TFTPError::access_violation(),
-                    datagram_stream,
-                    buffer,
-                ));
+                fire_error(TFTPError::access_violation(), datagram_stream, buffer).await;
+                return;
             }
             _error => {
-                return tokio::task::spawn_local(fire_error(
+                fire_error(
                     TFTPError::undefined("Server Error"),
                     datagram_stream,
                     buffer,
-                ));
+                )
+                .await;
+                return;
             }
         }
     }
-    tokio::task::spawn_local(fire_error(
-        TFTPError::file_not_found(),
-        datagram_stream,
-        buffer,
-    ))
+    fire_error(TFTPError::file_not_found(), datagram_stream, buffer).await;
 }
 
 async fn send<O: OpenedFile>(
