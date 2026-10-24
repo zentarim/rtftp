@@ -68,13 +68,13 @@ impl ReadRequest {
         }
         Ok(ReadRequest { filename, options })
     }
-    pub(super) fn open_in<O: OpenedFile>(
+    pub(super) async fn open_in<O: OpenedFile>(
         &self,
         filesystem: &impl Root<OpenedFile = O>,
     ) -> io::Result<O> {
         let normalized_path = self.filename.trim_start_matches('/');
         eprintln!("Opening {normalized_path} in {filesystem} ...");
-        filesystem.open(normalized_path)
+        filesystem.open(normalized_path).await
     }
 
     pub(super) fn yield_options(self) -> HashMap<String, String> {

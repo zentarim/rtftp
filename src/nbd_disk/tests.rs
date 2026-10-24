@@ -51,14 +51,14 @@ fn test_add_invalid_url() {
     ))
 }
 
-#[test]
-fn open_existing_file() {
+#[tokio::test(flavor = "current_thread")]
+async fn open_existing_file() {
     let nbd_process = run_nbd_server("127.0.0.2");
     let disk = attach_nbd_disk(nbd_process.get_url()).unwrap();
     let file = "/boot/aligned.file";
     let opened = disk.open(file);
     assert!(opened.is_ok());
-    assert_eq!(opened.unwrap().get_size().unwrap(), 4194304);
+    assert_eq!(opened.unwrap().get_size().await.unwrap(), 4194304);
 }
 
 #[test]
@@ -70,27 +70,27 @@ fn open_non_existing_file() {
     assert_eq!(result.err().unwrap().kind(), ErrorKind::NotFound);
 }
 
-#[test]
-fn read_existing_aligned_file() {
+#[tokio::test(flavor = "current_thread")]
+async fn read_existing_aligned_file() {
     let nbd_process = run_nbd_server("127.0.0.2");
     let disk = attach_nbd_disk(nbd_process.get_url()).unwrap();
     let chroot = RemoteRoot::new(disk, "/boot");
     let file = "aligned.file";
-    let mut opened = chroot.open(file).unwrap();
-    let expected_data = make_payload(opened.get_size().unwrap());
-    let read_data = read_file(&mut opened);
+    let mut opened = chroot.open(file).await.unwrap();
+    let expected_data = make_payload(opened.get_size().await.unwrap());
+    let read_data = read_file(&mut opened).await;
     assert_eq!(read_data, expected_data);
 }
 
-#[test]
-fn read_existing_nonaligned_file() {
+#[tokio::test(flavor = "current_thread")]
+async fn read_existing_nonaligned_file() {
     let nbd_process = run_nbd_server("127.0.0.2");
     let disk = attach_nbd_disk(nbd_process.get_url()).unwrap();
     let chroot = RemoteRoot::new(disk, "/boot");
     let file = "nonaligned.file";
-    let mut opened = chroot.open(file).unwrap();
-    let expected_data = make_payload(opened.get_size().unwrap());
-    let read_data = read_file(&mut opened);
+    let mut opened = chroot.open(file).await.unwrap();
+    let expected_data = make_payload(opened.get_size().await.unwrap());
+    let read_data = read_file(&mut opened).await;
     assert_eq!(read_data, expected_data);
 }
 

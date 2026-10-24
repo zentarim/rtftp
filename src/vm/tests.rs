@@ -88,21 +88,21 @@ fn test_open_existing_disk() {
     launch(test_disk.to_str().unwrap(), &boot_mounts(), "qcow-open").unwrap();
 }
 
-#[test]
-fn test_read_aligned_file() {
+#[tokio::test(flavor = "current_thread")]
+async fn test_read_aligned_file() {
     let (test_disk, _lock) = ensure_prerequisite_disk();
     let vm = launch(test_disk.to_str().unwrap(), &boot_mounts(), "qcow-aligned").unwrap();
     let root = RemoteRoot::new(
         ConnectedDisk::new(vm, test_disk.display().to_string()),
         "/boot",
     );
-    let mut opened = root.open("aligned.file").unwrap();
-    let expected = make_payload(opened.get_size().unwrap());
-    assert_eq!(read_file(&mut opened), expected);
+    let mut opened = root.open("aligned.file").await.unwrap();
+    let expected = make_payload(opened.get_size().await.unwrap());
+    assert_eq!(read_file(&mut opened).await, expected);
 }
 
-#[test]
-fn test_read_nonaligned_file() {
+#[tokio::test(flavor = "current_thread")]
+async fn test_read_nonaligned_file() {
     let (test_disk, _lock) = ensure_prerequisite_disk();
     let vm = launch(
         test_disk.to_str().unwrap(),
@@ -114,7 +114,7 @@ fn test_read_nonaligned_file() {
         ConnectedDisk::new(vm, test_disk.display().to_string()),
         "/boot",
     );
-    let mut opened = root.open("nonaligned.file").unwrap();
-    let expected = make_payload(opened.get_size().unwrap());
-    assert_eq!(read_file(&mut opened), expected);
+    let mut opened = root.open("nonaligned.file").await.unwrap();
+    let expected = make_payload(opened.get_size().await.unwrap());
+    assert_eq!(read_file(&mut opened).await, expected);
 }
