@@ -1,8 +1,14 @@
-use super::{VmError, classify_launch_error, disk_argument, guest_cmdline, kernel_path, launch};
+use super::{
+    VmError, classify_launch_error, connect_client, disk_argument, guest_cmdline, kernel_path,
+    launch,
+};
 use crate::fs::{OpenedFile, Root};
 use crate::remote_fs::{ConnectedDisk, RemoteRoot};
-use crate::tests_common::{ensure_prerequisite_disk, make_payload, read_file};
+use crate::tests_common::{ensure_prerequisite_disk, make_payload, mk_tmp, read_file};
+use file_protocol::VSOCK_PORT;
 use std::path::Path;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::UnixListener;
 
 fn boot_mounts() -> [(usize, &'static str); 2] {
     [(2, "/"), (1, "/boot")]
@@ -117,4 +123,39 @@ async fn test_read_nonaligned_file() {
     let mut opened = root.open("nonaligned.file").await.unwrap();
     let expected = make_payload(opened.get_size().await.unwrap());
     assert_eq!(read_file(&mut opened).await, expected);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn connect_client_accepts_ok_and_rejects_other_lines() {
+    let directory = mk_tmp(connect_client_accepts_ok_and_rejects_other_lines);
+    let ok_path = directory.join("ok.sock");
+    let listener = UnixListener::bind(&ok_path).unwrap();
+    let client = tokio::spawn(async move { connect_client(&ok_path).await });
+    let (mut server, _address) = listener.accept().await.unwrap();
+    let request = read_handshake_line(&mut server).await;
+    assert_eq!(request, format!("CONNECT {VSOCK_PORT}"));
+    server.write_all(b"OK 1234\n").await.unwrap();
+    client.await.unwrap().unwrap();
+
+    let bad_path = directory.join("bad.sock");
+    let listener = UnixListener::bind(&bad_path).unwrap();
+    let client = tokio::spawn(async move { connect_client(&bad_path).await });
+    let (mut server, _address) = listener.accept().await.unwrap();
+    let _request = read_handshake_line(&mut server).await;
+    server.write_all(b"NOPE\n").await.unwrap();
+    let error = client.await.unwrap().unwrap_err();
+    assert!(error.to_string().contains("unexpected vsock handshake"));
+}
+
+async fn read_handshake_line(stream: &mut tokio::net::UnixStream) -> String {
+    let mut request = Vec::new();
+    loop {
+        let mut byte = [0u8; 1];
+        stream.read_exact(&mut byte).await.unwrap();
+        if byte[0] == b'\n' {
+            break;
+        }
+        request.push(byte[0]);
+    }
+    String::from_utf8(request).unwrap()
 }

@@ -123,7 +123,7 @@ pub(super) struct FileReader {
 
 impl FileReader {
     async fn open(vsock_path: &std::path::Path, path: &str, display: String) -> io::Result<Self> {
-        let mut stream = UnixStream::from_std(connect_client(vsock_path)?)?;
+        let mut stream = connect_client(vsock_path).await?;
         write_request(&mut stream, path, MAX_CHUNK_SIZE).await?;
         stream.flush().await?;
         let size = read_reply(&mut stream).await?;
