@@ -8,18 +8,16 @@ use crate::nbd_disk::{NbdRoot, open_nbd_root};
 use crate::options::{AckTimeout, Blksize, TSize, WindowSize};
 use std::borrow::Borrow;
 use std::collections::HashMap;
+use std::fmt;
 use std::fmt::{Debug, Display, Formatter};
 use std::io;
 use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
-use std::thread::Builder;
-use std::time::Duration;
-use std::{fmt, thread, time};
+use std::time::{Duration, Instant};
 use tokio::net::UdpSocket;
-use tokio::runtime;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::{Receiver, Sender};
-use tokio::task::{JoinHandle, LocalSet};
+use tokio::task::JoinHandle;
 use tokio::time::timeout;
 
 #[cfg(test)]
@@ -249,8 +247,8 @@ enum RecvError {
 
 pub(super) struct PeerHandler {
     sender_address: IpAddr,
-    requests_channel: Sender<(u16, ReadRequest)>,
-    thread_handle: thread::JoinHandle<()>,
+    requests_channel: Option<Sender<(u16, ReadRequest)>>,
+    task: Option<JoinHandle<()>>,
 }
 
 impl Display for PeerHandler {
@@ -273,50 +271,45 @@ impl PeerHandler {
         idle_timeout: Duration,
     ) -> Self {
         let (tx, rx) = mpsc::channel::<(u16, ReadRequest)>(10);
-        let handle = Builder::new()
-            .name(format!("Handler {peer}"))
-            .spawn(move || {
-                let runtime = runtime::Builder::new_current_thread()
-                    .enable_time()
-                    .enable_io()
-                    .build()
-                    .unwrap();
-                let available_roots =
-                    runtime.block_on(roots_for_peer(&tftp_root, &peer.to_string()));
-                let local_task_set = LocalSet::new();
-                local_task_set.spawn_local(peer_requests_handler(
-                    peer,
-                    local_address,
-                    available_roots,
-                    rx,
-                    idle_timeout,
-                ));
-                runtime.block_on(local_task_set);
-                eprintln!("{peer}: Handler closed");
-            })
-            .unwrap();
+        let task = tokio::task::spawn_local(peer_requests_handler(
+            peer,
+            local_address,
+            tftp_root,
+            rx,
+            idle_timeout,
+        ));
         Self {
             sender_address: peer,
-            requests_channel: tx,
-            thread_handle: handle,
+            requests_channel: Some(tx),
+            task: Some(task),
         }
     }
 
-    pub(super) fn shutdown(self) {
+    pub(super) async fn shutdown(mut self) {
         eprintln!("{self}: Shutdown requested");
-        drop(self.requests_channel);
-        self.thread_handle.join().expect("Can't join thread");
+        drop(self.requests_channel.take());
+        if let Some(handle) = self.task.take() {
+            let _ = handle.await;
+        }
     }
 
     pub(super) async fn feed(&mut self, sender_port: u16, request: ReadRequest) -> bool {
-        self.requests_channel
-            .send((sender_port, request))
-            .await
-            .is_ok()
+        let Some(sender) = &self.requests_channel else {
+            return false;
+        };
+        sender.send((sender_port, request)).await.is_ok()
     }
 
     pub(super) fn is_finished(&self) -> bool {
-        self.thread_handle.is_finished()
+        self.task.as_ref().is_none_or(|handle| handle.is_finished())
+    }
+}
+
+impl Drop for PeerHandler {
+    fn drop(&mut self) {
+        if let Some(handle) = self.task.take() {
+            handle.abort();
+        }
     }
 }
 
@@ -337,13 +330,14 @@ async fn roots_for_peer(tftp_root: &Path, peer: &str) -> Vec<RootKind> {
 async fn peer_requests_handler(
     peer: IpAddr,
     local_address: IpAddr,
-    available_roots: Vec<RootKind>,
+    tftp_root: PathBuf,
     mut rx_channel: Receiver<(u16, ReadRequest)>,
     idle_timeout: Duration,
 ) {
+    let available_roots = roots_for_peer(&tftp_root, &peer.to_string()).await;
     let mut send_sessions: HashMap<u16, JoinHandle<()>> =
         HashMap::with_capacity(MAX_SESSIONS_PER_IP);
-    let mut last_active = time::Instant::now();
+    let mut last_active = Instant::now();
     loop {
         let (peer_port, request) = match timeout(Duration::from_secs(1), rx_channel.recv()).await {
             Ok(Some(result)) => result,
@@ -354,12 +348,12 @@ async fn peer_requests_handler(
             Err(_elapsed) => {
                 send_sessions.retain(|_peer_port, handle| !handle.is_finished());
                 if send_sessions.is_empty() {
-                    if time::Instant::now() - last_active > idle_timeout {
+                    if Instant::now() - last_active > idle_timeout {
                         eprintln!("{peer}: Handler inactive, shutting down");
                         break;
                     }
                 } else {
-                    last_active = time::Instant::now();
+                    last_active = Instant::now();
                 }
                 continue;
             }
@@ -395,6 +389,7 @@ async fn peer_requests_handler(
     for (_peer_port, handle) in send_sessions {
         _ = handle.await;
     }
+    eprintln!("{peer}: Handler closed");
 }
 
 async fn schedule_task(

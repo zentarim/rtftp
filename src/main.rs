@@ -111,6 +111,7 @@ async fn async_main() -> ExitCode {
             _ = server.serve(turn_duration) => {}
         }
     }
+    server.shutdown().await;
     eprintln!("Server is shut down");
     ExitCode::SUCCESS
 }
