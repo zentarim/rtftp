@@ -28,14 +28,14 @@ pub(super) fn contained_join(root: &Path, request: &str) -> io::Result<PathBuf> 
 }
 
 pub(super) trait OpenedFile: Display + Debug {
-    fn read_to(&mut self, buffer: &mut [u8]) -> io::Result<usize>;
+    async fn read_to(&mut self, buffer: &mut [u8]) -> io::Result<usize>;
 
-    fn get_size(&mut self) -> io::Result<usize>;
+    async fn get_size(&mut self) -> io::Result<usize>;
 }
 
 pub(super) trait Root: Display + Debug {
     type OpenedFile: OpenedFile;
-    fn open(&self, path: &str) -> io::Result<Self::OpenedFile>;
+    async fn open(&self, path: &str) -> io::Result<Self::OpenedFile>;
 }
 
 pub(super) enum RootKind {
