@@ -7,6 +7,7 @@ TEST_THREADS := $(shell echo $$(( $(CPU_CORES) < $(MAX_TEST_THREADS) ? $(CPU_COR
 RTFTP_TARGET_DIR := $(if $(CARGO_TARGET_DIR),$(CARGO_TARGET_DIR),target)
 MUSL_TARGET := x86_64-unknown-linux-musl
 STOREKEEPER_BIN := $(RTFTP_TARGET_DIR)/$(MUSL_TARGET)/release/rtftp-storekeeper
+INITRAMFS := $(RTFTP_TARGET_DIR)/initramfs.cpio
 
 all: lint test release
 
@@ -19,7 +20,7 @@ debug:
 release:
 	cargo build --release
 
-test: $(STOREKEEPER_BIN)
+test: $(INITRAMFS)
 	cargo test --release --workspace -- --test-threads ${TEST_THREADS}
 
 bench-download:
@@ -37,5 +38,9 @@ storekeeper:
 
 $(STOREKEEPER_BIN):
 	$(MAKE) storekeeper
+
+$(INITRAMFS): scripts/mk-initramfs.sh $(STOREKEEPER_BIN)
+	mkdir -p "$(dir $(INITRAMFS))"
+	STOREKEEPER="$(STOREKEEPER_BIN)" OUTPUT="$(INITRAMFS)" bash scripts/mk-initramfs.sh
 
 .PHONY: all clean debug release test bench-download lint format storekeeper
