@@ -1,15 +1,15 @@
 use file_protocol::VSOCK_PORT;
 use std::fs::{self, File};
-use std::io::{self, Read, Seek};
+use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
 use std::sync::Once;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use tokio::process::{Child, Command};
+use tokio::task::JoinHandle;
 
 #[cfg(test)]
 mod tests;
@@ -60,13 +60,13 @@ impl Vm {
 impl Drop for Vm {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
+        for thread in self.threads.drain(..) {
+            thread.abort();
+        }
         if matches!(self.child.try_wait(), Ok(None))
             && let Some(pid) = self.child.id()
         {
             unsafe { libc::kill(-(pid as i32), libc::SIGKILL) };
-        }
-        for thread in self.threads.drain(..) {
-            let _ = thread.join();
         }
         let _ = fs::remove_dir_all(&self.dir);
     }
@@ -136,8 +136,8 @@ pub(super) async fn launch(url: &str, mounts: &[(usize, &str)], peer: &str) -> R
     })?;
     let stop = Arc::new(AtomicBool::new(false));
     let threads = vec![
-        forward_file(serial_path.clone(), Arc::clone(&stop)),
-        forward_file(stderr_path.clone(), Arc::clone(&stop)),
+        forward_file(serial_path.clone(), peer.to_string(), Arc::clone(&stop)),
+        forward_file(stderr_path.clone(), peer.to_string(), Arc::clone(&stop)),
     ];
     let mut vm = Vm {
         child,
@@ -444,28 +444,60 @@ fn vm_dir(peer: &str) -> PathBuf {
     runtime_dir().join(format!("vm.{safe}.{}.{sequence}", std::process::id()))
 }
 
-fn forward_file(path: PathBuf, stop: Arc<AtomicBool>) -> JoinHandle<()> {
-    thread::spawn(move || {
+pub(super) fn take_prefixed_lines(pending: &mut Vec<u8>, chunk: &[u8], peer: &str) -> Vec<String> {
+    pending.extend_from_slice(chunk);
+    let mut lines = Vec::new();
+    let mut start = 0;
+    while let Some(relative) = pending[start..].iter().position(|byte| *byte == b'\n') {
+        let newline_at = start + relative;
+        let text = String::from_utf8_lossy(&pending[start..newline_at]);
+        lines.push(format!("{peer}: {text}"));
+        start = newline_at + 1;
+    }
+    if start > 0 {
+        pending.copy_within(start.., 0);
+        pending.truncate(pending.len() - start);
+    }
+    lines
+}
+
+pub(super) fn take_prefixed_remainder(pending: &mut Vec<u8>, peer: &str) -> Option<String> {
+    if pending.is_empty() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(pending).into_owned();
+    pending.clear();
+    Some(format!("{peer}: {text}"))
+}
+
+fn forward_file(path: PathBuf, peer: String, stop: Arc<AtomicBool>) -> JoinHandle<()> {
+    tokio::spawn(async move {
         let mut offset = 0u64;
+        let mut pending = Vec::new();
         let mut buffer = [0u8; 4096];
         while !stop.load(Ordering::Relaxed) {
-            let opened = File::open(&path);
+            let opened = tokio::fs::File::open(&path).await;
             let Ok(mut file) = opened else {
-                thread::sleep(Duration::from_millis(50));
+                tokio::time::sleep(Duration::from_millis(50)).await;
                 continue;
             };
-            if file.seek(std::io::SeekFrom::Start(offset)).is_err() {
-                thread::sleep(Duration::from_millis(50));
+            if file.seek(std::io::SeekFrom::Start(offset)).await.is_err() {
+                tokio::time::sleep(Duration::from_millis(50)).await;
                 continue;
             }
-            match file.read(&mut buffer) {
-                Ok(0) => thread::sleep(Duration::from_millis(50)),
+            match file.read(&mut buffer).await {
+                Ok(0) => tokio::time::sleep(Duration::from_millis(50)).await,
                 Ok(count) => {
                     offset += count as u64;
-                    eprint!("{}", String::from_utf8_lossy(&buffer[..count]));
+                    for line in take_prefixed_lines(&mut pending, &buffer[..count], &peer) {
+                        eprintln!("{line}");
+                    }
                 }
-                Err(_) => thread::sleep(Duration::from_millis(50)),
+                Err(_) => tokio::time::sleep(Duration::from_millis(50)).await,
             }
+        }
+        if let Some(line) = take_prefixed_remainder(&mut pending, &peer) {
+            eprintln!("{line}");
         }
     })
 }
