@@ -137,14 +137,42 @@ pub fn read_reply<R: Read>(reader: &mut R) -> Result<Reply, ProtocolError> {
     )))
 }
 
-pub fn write_chunk<W: Write>(writer: &mut W, data: &[u8]) -> Result<(), ProtocolError> {
-    if data.len() > MAX_CHUNK_SIZE {
-        return Err(ProtocolError::Malformed(
-            "chunk exceeds MAX_CHUNK_SIZE".to_string(),
-        ));
+const CHUNK_HEADER_CAP: usize = 4 + 1 + SIZE_LIMIT + 1;
+
+/// `CHNK`, NUL, decimal length, NUL. The payload and trailing NUL are separate.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ChunkHeader {
+    bytes: [u8; CHUNK_HEADER_CAP],
+    len: usize,
+}
+
+impl ChunkHeader {
+    pub fn new(payload_len: usize) -> Result<Self, ProtocolError> {
+        if payload_len > MAX_CHUNK_SIZE {
+            return Err(ProtocolError::Malformed(
+                "chunk exceeds MAX_CHUNK_SIZE".to_string(),
+            ));
+        }
+        let mut bytes = [0u8; CHUNK_HEADER_CAP];
+        bytes[0..4].copy_from_slice(b"CHNK");
+        let digits = payload_len.to_string();
+        let text_at = 5;
+        bytes[text_at..text_at + digits.len()].copy_from_slice(digits.as_bytes());
+        let end = text_at + digits.len();
+        bytes[end] = 0;
+        Ok(Self {
+            bytes,
+            len: end + 1,
+        })
     }
-    write_opcode(writer, b"CHNK")?;
-    write_cstr(writer, &data.len().to_string())?;
+
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.bytes[..self.len]
+    }
+}
+
+pub fn write_chunk<W: Write>(writer: &mut W, data: &[u8]) -> Result<(), ProtocolError> {
+    writer.write_all(ChunkHeader::new(data.len())?.as_bytes())?;
     writer.write_all(data)?;
     writer.write_all(&[0])?;
     Ok(())

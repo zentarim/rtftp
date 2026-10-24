@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "file-protocol"]
+members = [".", "file-protocol", "storekeeper"]
 resolver = "3"
 
 [package]

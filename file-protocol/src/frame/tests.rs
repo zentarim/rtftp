@@ -1,6 +1,6 @@
 use super::{
-    MAX_CHUNK_SIZE, ProtocolError, Reply, read_chunk, read_reply, read_request, write_chunk,
-    write_error, write_info, write_request,
+    ChunkHeader, MAX_CHUNK_SIZE, ProtocolError, Reply, read_chunk, read_reply, read_request,
+    write_chunk, write_error, write_info, write_request,
 };
 use std::io::Cursor;
 
@@ -44,6 +44,31 @@ fn zero_and_padded_send_are_rejected() {
             "{size}"
         );
     }
+}
+
+#[test]
+fn chunk_header_plus_payload_decodes() {
+    let payload = b"a\0b";
+    let header = ChunkHeader::new(payload.len()).unwrap();
+    let mut frame = Vec::new();
+    frame.extend_from_slice(header.as_bytes());
+    frame.extend_from_slice(payload);
+    frame.push(0);
+    let mut encoded = Vec::new();
+    write_chunk(&mut encoded, payload).unwrap();
+    assert_eq!(frame, encoded);
+    assert_eq!(read_chunk(&mut Cursor::new(frame)).unwrap(), payload);
+
+    let empty = ChunkHeader::new(0).unwrap();
+    let mut empty_frame = Vec::new();
+    empty_frame.extend_from_slice(empty.as_bytes());
+    empty_frame.push(0);
+    assert_eq!(empty_frame, b"CHNK\x000\x00\x00");
+    assert!(
+        read_chunk(&mut Cursor::new(empty_frame))
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[test]
