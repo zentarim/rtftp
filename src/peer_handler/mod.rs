@@ -281,8 +281,9 @@ impl PeerHandler {
                     .enable_io()
                     .build()
                     .unwrap();
+                let available_roots =
+                    runtime.block_on(roots_for_peer(&tftp_root, &peer.to_string()));
                 let local_task_set = LocalSet::new();
-                let available_roots = roots_for_peer(&tftp_root, &peer.to_string());
                 local_task_set.spawn_local(peer_requests_handler(
                     peer,
                     local_address,
@@ -319,9 +320,9 @@ impl PeerHandler {
     }
 }
 
-fn roots_for_peer(tftp_root: &Path, peer: &str) -> Vec<RootKind> {
+async fn roots_for_peer(tftp_root: &Path, peer: &str) -> Vec<RootKind> {
     let mut available_roots = vec![RootKind::Local(LocalRoot::new(tftp_root.join(peer)))];
-    match open_nbd_root(tftp_root, peer) {
+    match open_nbd_root(tftp_root, peer).await {
         NbdRoot::Connected(remote_root) => {
             available_roots.push(RootKind::Remote(remote_root));
         }

@@ -240,23 +240,23 @@ fn local_root_ends_with(roots: &[RootKind], directory_name: &str) -> bool {
     })
 }
 
-#[test]
-fn absent_nbd_config_uses_default_root() {
+#[tokio::test(flavor = "current_thread")]
+async fn absent_nbd_config_uses_default_root() {
     let tftp_root = mk_tmp(absent_nbd_config_uses_default_root);
-    let roots = roots_for_peer(&tftp_root, "10.0.0.1");
+    let roots = roots_for_peer(&tftp_root, "10.0.0.1").await;
     assert!(local_root_ends_with(&roots, "10.0.0.1"));
     assert!(local_root_ends_with(&roots, "default"));
 }
 
-#[test]
-fn unusable_nbd_config_skips_default_root() {
+#[tokio::test(flavor = "current_thread")]
+async fn unusable_nbd_config_skips_default_root() {
     let tftp_root = mk_tmp(unusable_nbd_config_skips_default_root);
     fs::write(
         tftp_root.join("10.0.0.1.nbd"),
         r#"{"url":"http://127.0.0.1/disk","mounts":[],"tftp_root":"/boot"}"#,
     )
     .unwrap();
-    let roots = roots_for_peer(&tftp_root, "10.0.0.1");
+    let roots = roots_for_peer(&tftp_root, "10.0.0.1").await;
     assert!(local_root_ends_with(&roots, "10.0.0.1"));
     assert!(!local_root_ends_with(&roots, "default"));
 }
