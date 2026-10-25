@@ -26,8 +26,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::string::String;
 use std::time::Duration;
-use tokio::runtime::Builder;
-use tokio::task::LocalSet;
+use tokio::runtime::{Builder, LocalOptions};
 
 #[derive(Parser, Debug)]
 #[command(color = clap::ColorChoice::Never)]
@@ -75,10 +74,11 @@ fn warn_if_kvm_unavailable() {
 
 fn main() -> ExitCode {
     warn_if_kvm_unavailable();
-    LocalSet::new().block_on(
-        &Builder::new_current_thread().enable_all().build().unwrap(),
-        async_main(),
-    )
+    Builder::new_current_thread()
+        .enable_all()
+        .build_local(LocalOptions::default())
+        .unwrap()
+        .block_on(async_main())
 }
 
 async fn async_main() -> ExitCode {
