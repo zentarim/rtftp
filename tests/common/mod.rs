@@ -76,6 +76,10 @@ fn get_free_port() -> u16 {
 
 include!("nbd_server.rs");
 
+pub(super) fn run_nbd_server_for(listen_ip: &str, disk: &std::path::Path) -> NBDServerProcess {
+    spawn_nbd_server(listen_ip, disk)
+}
+
 fn get_fn_name<T>(_: T) -> &'static str {
     type_name::<T>()
 }

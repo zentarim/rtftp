@@ -47,10 +47,6 @@ pub(super) fn run_nbd_server(listen_ip: &str) -> NBDServerProcess {
     server
 }
 
-pub(super) fn run_nbd_server_for(listen_ip: &str, disk: &std::path::Path) -> NBDServerProcess {
-    spawn_nbd_server(listen_ip, disk)
-}
-
 fn spawn_nbd_server(listen_ip: &str, test_disk: &std::path::Path) -> NBDServerProcess {
     let export_name = "disk";
     let listener = bind_listen_socket(listen_ip);
