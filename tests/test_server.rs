@@ -433,6 +433,35 @@ async fn test_download_nbd_file_nonaligned() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn test_download_nbd_file_nonaligned_window() {
+    let source_ip = "127.0.0.11";
+    let server_dir = mk_tmp(test_download_nbd_file_nonaligned_window);
+    let nbd_process = run_nbd_server("127.0.0.2");
+    let config = json!({
+        "url": nbd_process.get_url(),
+        "mounts": [
+            {
+                "partition": 2,
+                "mountpoint": "/",
+            },
+                {
+                "partition": 1,
+                "mountpoint": "/boot",
+            }
+        ],
+        "tftp_root": "/boot",
+    });
+    let nbd_share_config_file = server_dir.join(format!("{}.nbd", source_ip));
+    _write_file(&nbd_share_config_file, config.to_string().as_bytes());
+    let running_server = start_rtftp(server_dir.clone()).await;
+    let client = running_server.open_paired_client(source_ip).await;
+    let existing_file = "nonaligned.file";
+    let read_data = download_window(client, existing_file, 5).await.unwrap();
+    let data = make_payload(4194319);
+    assert_eq!(read_data, data);
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn request_file_size_remote() {
     let source_ip = "127.0.0.11";
     let server_dir = mk_tmp(request_file_size_remote);
