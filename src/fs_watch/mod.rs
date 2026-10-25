@@ -162,7 +162,10 @@ impl Watch {
         }
         let file = unsafe { File::from_raw_fd(raw_fd) };
         let (tx, rx) = async_channel::new::<InotifyEvent>();
-        let async_fd = Rc::new(AsyncFd::new(file)?);
+        // SAFETY: `file` owns the inotify descriptor created above and is moved
+        // into the AsyncFd, which keeps that same descriptor open until drop.
+        let async_fd =
+            Rc::new(unsafe { AsyncFd::register(file) }.map_err(|error| error.into_parts().1)?);
         let join_handle = tokio::task::spawn_local(read_loop(async_fd.clone(), tx));
         Ok(INotifyObserver {
             fd: async_fd,
