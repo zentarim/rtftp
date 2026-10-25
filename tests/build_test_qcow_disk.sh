@@ -20,4 +20,5 @@ guestfish <<EOF
   mount /dev/sda1 /boot
   fill-pattern '${DATA_PATTERN}' 4194304 /boot/aligned.file
   fill-pattern '${DATA_PATTERN}' 4194319 /boot/nonaligned.file
+  fill-pattern '${DATA_PATTERN}' 2048 /only-on-root.file
 EOF
