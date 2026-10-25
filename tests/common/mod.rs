@@ -307,6 +307,19 @@ pub(super) async fn wait_for_appliance(server_pid: u32) -> Vec<u32> {
     }
 }
 
+pub(super) async fn wait_until_appliances_gone(server_pid: u32) {
+    let deadline = time::Instant::now() + time::Duration::from_secs(15);
+    loop {
+        if appliance_pids(server_pid).is_empty() {
+            return;
+        }
+        if time::Instant::now() >= deadline {
+            panic!("guest appliance under rtftp {server_pid} did not disappear");
+        }
+        tokio::time::sleep(time::Duration::from_millis(50)).await;
+    }
+}
+
 pub(super) async fn wait_for_appliance_change(server_pid: u32, previous: &[u32]) -> Vec<u32> {
     let deadline = time::Instant::now() + time::Duration::from_secs(30);
     loop {

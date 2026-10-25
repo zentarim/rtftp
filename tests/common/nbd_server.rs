@@ -64,6 +64,7 @@ fn spawn_nbd_server(listen_ip: &str, test_disk: &std::path::Path) -> NBDServerPr
         .arg(format!("--export-name={export_name}"))
         .arg("--read-only")
         .arg("--shared=100")
+        .arg("--persistent")
         .arg(test_disk);
     let listener_fd = {
         use std::os::fd::AsRawFd;
