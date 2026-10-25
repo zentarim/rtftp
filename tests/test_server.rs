@@ -1,4 +1,7 @@
-use crate::common::{make_payload, mk_tmp, run_nbd_server, start_rtftp};
+use crate::common::{
+    make_payload, mk_tmp, run_nbd_server, start_rtftp, wait_for_appliance,
+    wait_until_guest_listening, wait_until_watching,
+};
 use serde_json::json;
 use std::collections::HashMap;
 use std::ffi::CStr;
@@ -619,6 +622,7 @@ async fn test_download_nbd_file_nonaligned_augmented() {
     let server_dir = mk_tmp(test_download_nbd_file_nonaligned_augmented);
     let nbd_process = run_nbd_server("127.0.0.2");
     let running_server = start_rtftp(server_dir.clone()).await;
+    wait_until_watching(running_server.pid()).await;
     let config = json!({
         "url": nbd_process.get_url(),
         "mounts": [
@@ -635,6 +639,8 @@ async fn test_download_nbd_file_nonaligned_augmented() {
     });
     let nbd_share_config_file = server_dir.join(format!("{}.nbd", source_ip));
     _write_file(&nbd_share_config_file, config.to_string().as_bytes());
+    wait_for_appliance(running_server.pid()).await;
+    wait_until_guest_listening(&running_server, 0).await;
     let client = running_server.open_paired_client(source_ip).await;
     let existing_file = "nonaligned.file";
     let read_data = download(client, existing_file).await.unwrap();

@@ -119,6 +119,10 @@ pub(super) struct RunningServer {
 }
 
 impl RunningServer {
+    pub(super) fn pid(&self) -> u32 {
+        self.process.id()
+    }
+
     pub(super) fn stderr_output(&self) -> String {
         self.stderr_output.lock().unwrap().clone()
     }
@@ -244,6 +248,106 @@ fn drain_stderr(fd: RawFd, captured: &Mutex<String>) -> bool {
             Err(_) => return true,
         }
     }
+}
+
+pub(super) async fn wait_until_watching(server_pid: u32) {
+    let deadline = time::Instant::now() + time::Duration::from_secs(5);
+    loop {
+        if process_has_inotify(server_pid) {
+            return;
+        }
+        if time::Instant::now() >= deadline {
+            panic!("rtftp {server_pid} did not open an inotify watch");
+        }
+        tokio::time::sleep(time::Duration::from_millis(20)).await;
+    }
+}
+
+pub(super) fn appliance_pids(server_pid: u32) -> Vec<u32> {
+    let mut found = Vec::new();
+    let mut pending = child_pids(server_pid);
+    let mut seen = Vec::new();
+    while let Some(pid) = pending.pop() {
+        if seen.contains(&pid) {
+            continue;
+        }
+        seen.push(pid);
+        if command_line_contains_qemu(pid) {
+            found.push(pid);
+        }
+        pending.extend(child_pids(pid));
+    }
+    found.sort();
+    found
+}
+
+pub(super) async fn wait_for_appliance(server_pid: u32) -> Vec<u32> {
+    let deadline = time::Instant::now() + time::Duration::from_secs(30);
+    loop {
+        let pids = appliance_pids(server_pid);
+        if !pids.is_empty() {
+            return pids;
+        }
+        if time::Instant::now() >= deadline {
+            panic!("guest appliance under rtftp {server_pid} did not appear");
+        }
+        tokio::time::sleep(time::Duration::from_millis(50)).await;
+    }
+}
+
+pub(super) async fn wait_until_guest_listening(server: &RunningServer, after: usize) {
+    let deadline = time::Instant::now() + time::Duration::from_secs(30);
+    loop {
+        let logged = server.stderr_output();
+        let fresh = logged.get(after..).unwrap_or("");
+        if fresh.contains("Connected config") {
+            return;
+        }
+        if time::Instant::now() >= deadline {
+            panic!("guest did not connect\n{logged}");
+        }
+        tokio::time::sleep(time::Duration::from_millis(50)).await;
+    }
+}
+
+fn child_pids(pid: u32) -> Vec<u32> {
+    let Ok(tasks) = std::fs::read_dir(format!("/proc/{pid}/task")) else {
+        return Vec::new();
+    };
+    let mut children = Vec::new();
+    for task in tasks.flatten() {
+        let Ok(text) = std::fs::read_to_string(task.path().join("children")) else {
+            continue;
+        };
+        for token in text.split_whitespace() {
+            if let Ok(child_pid) = token.parse::<u32>() {
+                children.push(child_pid);
+            }
+        }
+    }
+    children.sort();
+    children.dedup();
+    children
+}
+
+fn command_line_contains_qemu(pid: u32) -> bool {
+    let Ok(command_line) = std::fs::read(format!("/proc/{pid}/cmdline")) else {
+        return false;
+    };
+    command_line
+        .windows(b"qemu".len())
+        .any(|window| window == b"qemu")
+}
+
+fn process_has_inotify(server_pid: u32) -> bool {
+    let Ok(entries) = std::fs::read_dir(format!("/proc/{server_pid}/fd")) else {
+        return false;
+    };
+    entries.flatten().any(|entry| {
+        std::fs::read_link(entry.path())
+            .ok()
+            .is_some_and(|target| target.to_string_lossy() == "anon_inode:inotify")
+    })
 }
 
 fn is_udp_port_open(addr: SocketAddr) -> bool {
