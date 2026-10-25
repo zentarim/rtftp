@@ -15,6 +15,7 @@ const _ERR: u16 = 0x05;
 const _OACK: u16 = 0x06;
 
 const _WINDOW_SIZE: &str = "windowsize";
+const _BLOCK_SIZE: &str = "blksize";
 
 #[derive(Debug)]
 struct _SendError<T> {
@@ -657,6 +658,83 @@ pub(crate) async fn download_window(
         sent_ack = Some(last_block.take().unwrap().acknowledge().await?);
     }
     Ok(read_data)
+}
+
+#[allow(dead_code)]
+pub(crate) struct TimedDownload {
+    pub(crate) data: Vec<u8>,
+    /// From sending the request to the first DATA, or to the OACK when a
+    /// block size is negotiated.
+    pub(crate) first_response: Duration,
+    pub(crate) total: Duration,
+    /// The longest wait between two consecutive blocks, and the 1-based
+    /// number of the block that ended it.
+    pub(crate) max_gap: Duration,
+    pub(crate) max_gap_block: usize,
+}
+
+/// Download `file`, timing the first response and the whole transfer.
+///
+/// The first response waits for a cold guest to boot, so it gets a longer
+/// timeout than the blocks that follow.
+#[allow(dead_code)]
+pub(crate) async fn timed_download(
+    client: TFTPClient,
+    file: &str,
+    block_size: Option<u16>,
+) -> Result<TimedDownload, DownloadError> {
+    let first_timeout: usize = 30;
+    let default_timeout: usize = 5;
+    let mut read_data: Vec<u8> = Vec::new();
+    let start = time::Instant::now();
+    let (first_response, expected_block_size, mut block) = match block_size {
+        None => {
+            let sent_request = client.send_plain_read_request(file).await?;
+            let block = sent_request.read_next(first_timeout).await?;
+            (start.elapsed(), 512usize, block)
+        }
+        Some(block_size) => {
+            let options = HashMap::from([(_BLOCK_SIZE.to_string(), block_size.to_string())]);
+            let sent_request = client.send_optioned_read_request(file, &options).await?;
+            let oack = sent_request.read_oack(first_timeout).await?;
+            let first_response = start.elapsed();
+            let negotiated = oack.fields().get(_BLOCK_SIZE).cloned();
+            if negotiated.as_deref() != Some(block_size.to_string().as_str()) {
+                return Err(DownloadError(format!(
+                    "Block size mismatch: Received {negotiated:?}, expected {block_size}"
+                )));
+            }
+            let block = oack.acknowledge().await?.read_next(default_timeout).await?;
+            (first_response, block_size as usize, block)
+        }
+    };
+    let mut received_at = time::Instant::now();
+    let mut received_blocks: usize = 1;
+    let mut max_gap = Duration::ZERO;
+    let mut max_gap_block: usize = 0;
+    loop {
+        let recv_block_len = block.data().len();
+        read_data.extend(block.data());
+        let sent_ack = block.acknowledge().await?;
+        if recv_block_len < expected_block_size {
+            break;
+        }
+        block = sent_ack.read_next(default_timeout).await?;
+        received_blocks += 1;
+        let gap = received_at.elapsed();
+        received_at = time::Instant::now();
+        if gap > max_gap {
+            max_gap = gap;
+            max_gap_block = received_blocks;
+        }
+    }
+    Ok(TimedDownload {
+        data: read_data,
+        first_response,
+        total: start.elapsed(),
+        max_gap,
+        max_gap_block,
+    })
 }
 
 #[derive(Debug)]

@@ -6,7 +6,7 @@ use std::net::{IpAddr, SocketAddr};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::{env, net, time};
 use tokio::io::Interest;
 use tokio::io::unix::AsyncFd;
@@ -39,6 +39,27 @@ fn ensure_prerequisite_disk() -> (PathBuf, File) {
         }
     }
     (test_disk, file)
+}
+
+/// Build the libguestfs supermin appliance before anything is timed.
+///
+/// libguestfs builds the appliance lazily on its first launch. A cached test
+/// disk never runs guestfish, so it does not guarantee the appliance exists.
+#[allow(dead_code)]
+pub(super) fn ensure_supermin_appliance() {
+    static APPLIANCE: OnceLock<()> = OnceLock::new();
+    APPLIANCE.get_or_init(|| {
+        let test_data_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests");
+        let file = File::open(&test_data_dir).unwrap();
+        file.lock().unwrap();
+        let status = Command::new("guestfish")
+            .args(["-a", "/dev/null", "run"])
+            .status()
+            .unwrap_or_else(|err| panic!("guestfish failed to start: {err}"));
+        if !status.success() {
+            panic!("guestfish could not launch the appliance: {status}");
+        }
+    });
 }
 
 fn disk_script_is_newer(test_disk: &std::path::Path, script: &std::path::Path) -> bool {

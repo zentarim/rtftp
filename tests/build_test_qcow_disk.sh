@@ -21,4 +21,10 @@ guestfish <<EOF
   fill-pattern '${DATA_PATTERN}' 4194304 /boot/aligned.file
   fill-pattern '${DATA_PATTERN}' 4194319 /boot/nonaligned.file
   fill-pattern '${DATA_PATTERN}' 2048 /only-on-root.file
+  fill-pattern '${DATA_PATTERN}' 1048576 /boot/size_1M.file
+  fill-pattern '${DATA_PATTERN}' 2097152 /boot/size_2M.file
+  fill-pattern '${DATA_PATTERN}' 4194304 /boot/size_4M.file
+  fill-pattern '${DATA_PATTERN}' 8388608 /boot/size_8M.file
+  fill-pattern '${DATA_PATTERN}' 16777216 /boot/size_16M.file
+  fill-pattern '${DATA_PATTERN}' 33554432 /boot/size_32M.file
 EOF
