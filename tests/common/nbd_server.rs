@@ -42,6 +42,16 @@ impl Drop for NBDServerProcess {
 
 pub(super) fn run_nbd_server(listen_ip: &str) -> NBDServerProcess {
     let (test_disk, locked_tests_directory) = ensure_prerequisite_disk();
+    let server = spawn_nbd_server(listen_ip, &test_disk);
+    drop(locked_tests_directory);
+    server
+}
+
+pub(super) fn run_nbd_server_for(listen_ip: &str, disk: &std::path::Path) -> NBDServerProcess {
+    spawn_nbd_server(listen_ip, disk)
+}
+
+fn spawn_nbd_server(listen_ip: &str, test_disk: &std::path::Path) -> NBDServerProcess {
     let export_name = "disk";
     let listener = bind_listen_socket(listen_ip);
     let listen_port = listener
@@ -68,7 +78,6 @@ pub(super) fn run_nbd_server(listen_ip: &str) -> NBDServerProcess {
     wait_until_listening(&mut server.process, listen_ip, listen_port).unwrap_or_else(|err| {
         panic!("qemu-nbd failed to listen on {listen_ip}:{listen_port}: {err}")
     });
-    drop(locked_tests_directory);
     eprintln!("Started NBD server on {}", server.url);
     server
 }
@@ -177,8 +186,13 @@ fn write_listen_pid(slot: &mut [u8], pid: libc::pid_t) {
 }
 
 fn close_inherited_fds() -> std::io::Result<()> {
-    if unsafe { libc::close_range((ACTIVATED_SOCKET_FD + 1) as libc::c_uint, libc::c_uint::MAX, 0) }
-        != 0
+    if unsafe {
+        libc::close_range(
+            (ACTIVATED_SOCKET_FD + 1) as libc::c_uint,
+            libc::c_uint::MAX,
+            0,
+        )
+    } != 0
     {
         return Err(std::io::Error::last_os_error());
     }
@@ -380,8 +394,11 @@ fn spawned_qemu_nbd_drops_inherited_sockets() {
     assert!(inherited.starts_with("socket:["));
     let server = run_nbd_server("127.0.0.2");
     let child_fds = fd_targets(server.process.id()).unwrap();
-    let activated = std::fs::read_link(format!("/proc/{}/fd/{ACTIVATED_SOCKET_FD}", server.process.id()))
-        .unwrap();
+    let activated = std::fs::read_link(format!(
+        "/proc/{}/fd/{ACTIVATED_SOCKET_FD}",
+        server.process.id()
+    ))
+    .unwrap();
     assert!(
         activated.to_string_lossy().starts_with("socket:["),
         "activation fd is {activated:?}"
