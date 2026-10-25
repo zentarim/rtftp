@@ -1,6 +1,6 @@
 use crate::common::{
-    build_pattern_disk, make_payload, mk_tmp, run_nbd_server, run_nbd_server_for, start_rtftp,
-    start_rtftp_with_idle_timeout, wait_for_appliance, wait_for_appliance_change,
+    appliance_pids, build_pattern_disk, make_payload, mk_tmp, run_nbd_server, run_nbd_server_for,
+    start_rtftp, start_rtftp_with_idle_timeout, wait_for_appliance, wait_for_appliance_change,
     wait_until_appliances_gone, wait_until_guest_listening, wait_until_watching,
 };
 use serde_json::json;
@@ -718,6 +718,45 @@ async fn test_idle_timeout_boots_a_new_vm() {
     assert_eq!(second_read, make_payload(4194304));
     let new_appliances = wait_for_appliance_change(running_server.pid(), &first_appliances).await;
     assert!(!new_appliances.is_empty());
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_unusable_nbd_config_hides_default_root() {
+    let source_ip = "127.0.0.11";
+    let server_dir = mk_tmp(test_unusable_nbd_config_hides_default_root);
+    let running_server = start_rtftp(server_dir.clone()).await;
+    wait_until_watching(running_server.pid()).await;
+    let default_name = "only-default.txt";
+    let default_data = make_payload(512);
+    _write_file(
+        &server_dir.join("default").join(default_name),
+        &default_data,
+    );
+    let peer_name = "peer.txt";
+    let peer_data = make_payload(768);
+    _write_file(&server_dir.join(source_ip).join(peer_name), &peer_data);
+    let config = json!({
+        "url": "http://127.0.0.1/disk",
+        "mounts": [],
+        "tftp_root": "/boot",
+    });
+    _write_file(
+        &server_dir.join(format!("{source_ip}.nbd")),
+        config.to_string().as_bytes(),
+    );
+    tokio::time::sleep(time::Duration::from_secs(1)).await;
+    assert!(appliance_pids(running_server.pid()).is_empty());
+    let client = running_server.open_paired_client(source_ip).await;
+    let sent_request = client.send_plain_read_request(default_name).await.unwrap();
+    let result = sent_request.read_next(5).await;
+    assert!(
+        matches!(&result, Err(TFTPClientError::ClientError(0x01, msg)) if msg == "File not found"),
+        "Unexpected result {result:?}"
+    );
+    let client = running_server.open_paired_client(source_ip).await;
+    let read_data = download(client, peer_name).await.unwrap();
+    assert_eq!(read_data, peer_data);
+    assert!(appliance_pids(running_server.pid()).is_empty());
 }
 
 fn boot_nbd_config(url: &str) -> serde_json::Value {
