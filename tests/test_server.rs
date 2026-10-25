@@ -759,6 +759,36 @@ async fn test_unusable_nbd_config_hides_default_root() {
     assert!(appliance_pids(running_server.pid()).is_empty());
 }
 
+#[tokio::test(flavor = "current_thread")]
+async fn test_download_root_partition_file() {
+    let source_ip = "127.0.0.11";
+    let server_dir = mk_tmp(test_download_root_partition_file);
+    let nbd_process = run_nbd_server("127.0.0.2");
+    let config = json!({
+        "url": nbd_process.get_url(),
+        "mounts": [
+            {
+                "partition": 2,
+                "mountpoint": "/",
+            },
+                {
+                "partition": 1,
+                "mountpoint": "/boot",
+            }
+        ],
+        "tftp_root": "/",
+    });
+    let nbd_share_config_file = server_dir.join(format!("{source_ip}.nbd"));
+    _write_file(&nbd_share_config_file, config.to_string().as_bytes());
+    let running_server = start_rtftp(server_dir.clone()).await;
+    let client = running_server.open_paired_client(source_ip).await;
+    let root_file = download(client, "only-on-root.file").await.unwrap();
+    assert_eq!(root_file, make_payload(2048));
+    let client = running_server.open_paired_client(source_ip).await;
+    let boot_file = download(client, "boot/aligned.file").await.unwrap();
+    assert_eq!(boot_file, make_payload(4194304));
+}
+
 fn boot_nbd_config(url: &str) -> serde_json::Value {
     json!({
         "url": url,
