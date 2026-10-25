@@ -1,6 +1,7 @@
 use crate::common::{
     build_pattern_disk, make_payload, mk_tmp, run_nbd_server, run_nbd_server_for, start_rtftp,
-    wait_for_appliance, wait_for_appliance_change, wait_until_guest_listening, wait_until_watching,
+    start_rtftp_with_idle_timeout, wait_for_appliance, wait_for_appliance_change,
+    wait_until_appliances_gone, wait_until_guest_listening, wait_until_watching,
 };
 use serde_json::json;
 use std::collections::HashMap;
@@ -687,6 +688,36 @@ async fn test_rewritten_nbd_config_serves_new_disk() {
         .take(4194304)
         .collect();
     assert_eq!(read_data, expected);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_idle_timeout_boots_a_new_vm() {
+    let source_ip = "127.0.0.11";
+    let server_dir = mk_tmp(test_idle_timeout_boots_a_new_vm);
+    let nbd_process = run_nbd_server("127.0.0.2");
+    let running_server = start_rtftp_with_idle_timeout(server_dir.clone(), 1).await;
+    wait_until_watching(running_server.pid()).await;
+    let config_path = server_dir.join(format!("{source_ip}.nbd"));
+    _write_file(
+        &config_path,
+        boot_nbd_config(nbd_process.get_url())
+            .to_string()
+            .as_bytes(),
+    );
+    let first_appliances = wait_for_appliance(running_server.pid()).await;
+    wait_until_guest_listening(&running_server, 0).await;
+    let client = running_server.open_paired_client(source_ip).await;
+    let first_read = download(client, "aligned.file").await.unwrap();
+    assert_eq!(first_read, make_payload(4194304));
+    wait_until_appliances_gone(running_server.pid()).await;
+    // The server drops a finished handler on its one-second turn. A read
+    // before that turn reaches the dead handler and is discarded.
+    tokio::time::sleep(time::Duration::from_millis(1500)).await;
+    let client = running_server.open_paired_client(source_ip).await;
+    let second_read = download(client, "aligned.file").await.unwrap();
+    assert_eq!(second_read, make_payload(4194304));
+    let new_appliances = wait_for_appliance_change(running_server.pid(), &first_appliances).await;
+    assert!(!new_appliances.is_empty());
 }
 
 fn boot_nbd_config(url: &str) -> serde_json::Value {
