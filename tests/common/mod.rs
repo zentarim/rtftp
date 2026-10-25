@@ -41,6 +41,18 @@ fn ensure_prerequisite_disk() -> (PathBuf, File) {
     (test_disk, file)
 }
 
+pub(super) fn build_pattern_disk(disk: &std::path::Path, pattern: &str) {
+    let script = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/build_test_qcow_disk.sh");
+    let status = Command::new(&script)
+        .arg(disk)
+        .arg(pattern)
+        .status()
+        .unwrap_or_else(|err| panic!("{script:?} failed to start: {err}"));
+    if !status.success() {
+        panic!("{script:?} failed");
+    }
+}
+
 fn get_free_port() -> u16 {
     let opened_socket = net::TcpListener::bind(("127.0.1.1", 0)).unwrap();
     opened_socket.local_addr().unwrap().port()
@@ -290,6 +302,20 @@ pub(super) async fn wait_for_appliance(server_pid: u32) -> Vec<u32> {
         }
         if time::Instant::now() >= deadline {
             panic!("guest appliance under rtftp {server_pid} did not appear");
+        }
+        tokio::time::sleep(time::Duration::from_millis(50)).await;
+    }
+}
+
+pub(super) async fn wait_for_appliance_change(server_pid: u32, previous: &[u32]) -> Vec<u32> {
+    let deadline = time::Instant::now() + time::Duration::from_secs(30);
+    loop {
+        let pids = appliance_pids(server_pid);
+        if !pids.is_empty() && pids.as_slice() != previous {
+            return pids;
+        }
+        if time::Instant::now() >= deadline {
+            panic!("guest appliances under rtftp {server_pid} did not change");
         }
         tokio::time::sleep(time::Duration::from_millis(50)).await;
     }

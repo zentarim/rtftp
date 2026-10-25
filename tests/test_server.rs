@@ -1,6 +1,6 @@
 use crate::common::{
-    make_payload, mk_tmp, run_nbd_server, start_rtftp, wait_for_appliance,
-    wait_until_guest_listening, wait_until_watching,
+    build_pattern_disk, make_payload, mk_tmp, run_nbd_server, run_nbd_server_for, start_rtftp,
+    wait_for_appliance, wait_for_appliance_change, wait_until_guest_listening, wait_until_watching,
 };
 use serde_json::json;
 use std::collections::HashMap;
@@ -646,6 +646,64 @@ async fn test_download_nbd_file_nonaligned_augmented() {
     let read_data = download(client, existing_file).await.unwrap();
     let data = make_payload(4194319);
     assert_eq!(read_data, data);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_rewritten_nbd_config_serves_new_disk() {
+    let source_ip = "127.0.0.11";
+    let server_dir = mk_tmp(test_rewritten_nbd_config_serves_new_disk);
+    let second_pattern = "SECOND PATTERN";
+    let second_disk = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/second_pattern.qcow2");
+    build_pattern_disk(&second_disk, second_pattern);
+    let first_nbd = run_nbd_server("127.0.0.2");
+    let second_nbd = run_nbd_server_for("127.0.0.3", &second_disk);
+    let running_server = start_rtftp(server_dir.clone()).await;
+    wait_until_watching(running_server.pid()).await;
+    let config_path = server_dir.join(format!("{source_ip}.nbd"));
+    _write_file(
+        &config_path,
+        boot_nbd_config(first_nbd.get_url()).to_string().as_bytes(),
+    );
+    let first_appliances = wait_for_appliance(running_server.pid()).await;
+    wait_until_guest_listening(&running_server, 0).await;
+    let logged_before = running_server.stderr_output().len();
+    _write_file(
+        &config_path,
+        boot_nbd_config(second_nbd.get_url()).to_string().as_bytes(),
+    );
+    let changed = wait_for_appliance_change(running_server.pid(), &first_appliances).await;
+    assert!(
+        changed.iter().any(|pid| !first_appliances.contains(pid)),
+        "rewritten config did not start a new appliance"
+    );
+    wait_until_guest_listening(&running_server, logged_before).await;
+    let client = running_server.open_paired_client(source_ip).await;
+    let read_data = download(client, "aligned.file").await.unwrap();
+    let expected: Vec<u8> = second_pattern
+        .as_bytes()
+        .iter()
+        .copied()
+        .cycle()
+        .take(4194304)
+        .collect();
+    assert_eq!(read_data, expected);
+}
+
+fn boot_nbd_config(url: &str) -> serde_json::Value {
+    json!({
+        "url": url,
+        "mounts": [
+            {
+                "partition": 2,
+                "mountpoint": "/",
+            },
+                {
+                "partition": 1,
+                "mountpoint": "/boot",
+            }
+        ],
+        "tftp_root": "/boot",
+    })
 }
 
 #[tokio::test(flavor = "current_thread")]
