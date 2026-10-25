@@ -632,7 +632,7 @@ async fn download_local_aligned_file_window() {
 async fn download_local_unaligned_file_window() {
     let source_ip = "127.0.0.11";
     let server_dir = mk_tmp(download_local_unaligned_file_window);
-    let payload_size = 4096;
+    let payload_size = 4196;
     let data = make_payload(payload_size);
     let file_name = "file.txt";
     let file = server_dir.join(source_ip).join(file_name);
