@@ -17,9 +17,6 @@ static LISTEN_PID_SLOT: ForkSlot<[u8; LISTEN_PID_SLOT_LEN]> =
 static ENV_SLOTS: ForkSlot<[*const libc::c_char; ENV_CAPACITY]> =
     ForkSlot(std::cell::UnsafeCell::new([std::ptr::null(); ENV_CAPACITY]));
 
-unsafe extern "C" {
-    static mut environ: *const *const libc::c_char;
-}
 static LISTEN_FDS_ENTRY: [u8; 13] = *b"LISTEN_FDS=1\0";
 
 pub(super) struct NBDServerProcess {
@@ -137,8 +134,8 @@ fn install_activation_environment() -> std::io::Result<()> {
     let env_slots = unsafe { &mut *ENV_SLOTS.0.get() };
     let mut count = 0usize;
     unsafe {
-        if !environ.is_null() {
-            let mut entry = environ;
+        if !libc::environ.is_null() {
+            let mut entry = libc::environ;
             while !(*entry).is_null() {
                 let bytes = std::ffi::CStr::from_ptr(*entry).to_bytes();
                 let replaced =
@@ -158,7 +155,7 @@ fn install_activation_environment() -> std::io::Result<()> {
         env_slots[count] = LISTEN_FDS_ENTRY.as_ptr().cast();
         count += 1;
         env_slots[count] = std::ptr::null();
-        environ = env_slots.as_ptr();
+        libc::environ = env_slots.as_mut_ptr().cast();
     }
     Ok(())
 }
