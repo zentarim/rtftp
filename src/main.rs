@@ -50,6 +50,7 @@ struct Args {
         long,
         help = "Monitor configs directory",
         default_value_t = true,
+        action = clap::ArgAction::Set,
         long_help = "Monitor the TFTP root directory in real time and immediately open a remote FS at configs appearance."
     )]
     monitor_configs: bool,
