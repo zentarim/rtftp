@@ -8,6 +8,8 @@ use std::io;
 use std::path::PathBuf;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::UnixStream;
+use tokio::sync::mpsc;
+use tokio::task::JoinHandle;
 
 #[cfg(test)]
 mod tests;
@@ -114,7 +116,8 @@ impl FileChunk {
 
 #[derive(Debug)]
 pub(super) struct FileReader {
-    stream: UnixStream,
+    chunks: mpsc::Receiver<io::Result<Vec<u8>>>,
+    prefetch: JoinHandle<()>,
     file_size: usize,
     current_offset: usize,
     chunk: FileChunk,
@@ -130,8 +133,13 @@ impl FileReader {
         let file_size =
             usize::try_from(size).map_err(|_| io::Error::other("file size exceeds usize"))?;
         let first_chunk = read_chunk(&mut stream).await?;
+        // Keep draining the guest while the current chunk is served, so the next
+        // one is already here when it runs out.
+        let (sender, chunks) = mpsc::channel(1);
+        let prefetch = tokio::spawn(prefetch_chunks(stream, sender));
         Ok(Self {
-            stream,
+            chunks,
+            prefetch,
             file_size,
             current_offset: 0,
             chunk: FileChunk::new(first_chunk),
@@ -140,12 +148,31 @@ impl FileReader {
     }
 
     async fn buffer_new_chunk(&mut self) -> io::Result<bool> {
-        let next_chunk = read_chunk(&mut self.stream).await?;
+        let Some(next_chunk) = self.chunks.recv().await else {
+            return Ok(false);
+        };
+        let next_chunk = next_chunk?;
         if next_chunk.is_empty() {
             Ok(false)
         } else {
             self.chunk = FileChunk::new(next_chunk);
             Ok(true)
+        }
+    }
+}
+
+impl Drop for FileReader {
+    fn drop(&mut self) {
+        self.prefetch.abort();
+    }
+}
+
+async fn prefetch_chunks(mut stream: UnixStream, sender: mpsc::Sender<io::Result<Vec<u8>>>) {
+    loop {
+        let chunk = read_chunk(&mut stream).await;
+        let last = chunk.as_ref().map_or(true, |chunk| chunk.is_empty());
+        if sender.send(chunk).await.is_err() || last {
+            break;
         }
     }
 }
