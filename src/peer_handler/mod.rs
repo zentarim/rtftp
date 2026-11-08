@@ -609,14 +609,10 @@ async fn negotiate_options<O: OpenedFile>(
     options: &HashMap<String, String>,
 ) -> Option<(Window, AckTimeout)> {
     let mut oack = OptionsAcknowledge::new();
-    let ack_timeout = {
-        if let Some(timeout) = AckTimeout::find_in(options) {
-            oack.push(timeout.as_key_pair());
-            timeout
-        } else {
-            Default::default()
-        }
-    };
+    let (ack_timeout, timeout_pairs) = AckTimeout::negotiate(options);
+    for pair in timeout_pairs {
+        oack.push(pair);
+    }
     let block_size = {
         if let Some(block_size) = Blksize::find_in(options) {
             oack.push(block_size.as_key_pair());

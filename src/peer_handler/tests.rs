@@ -7,7 +7,7 @@ use crate::peer_handler::{
 };
 use crate::tests_common::mk_tmp;
 use std::collections::HashMap;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use std::{fmt, fs, io};
 use tokio::join;
 use tokio::net::UdpSocket;
@@ -489,11 +489,12 @@ async fn ack_beyond_sent_blocks_is_ignored() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn oack_retransmit_after_dirty_receive_buffer() {
-    let mut options = HashMap::new();
-    options.insert(String::from("timeout"), String::from("1"));
-    let ack_timeout = AckTimeout::find_in(&options).expect("timeout 1 is in range");
+    let options = HashMap::from([(String::from("timeout"), String::from("1"))]);
+    let (ack_timeout, pairs) = AckTimeout::negotiate(&options);
     let mut oack = OptionsAcknowledge::new();
-    oack.push(ack_timeout.as_key_pair());
+    for pair in pairs {
+        oack.push(pair);
+    }
 
     let (server_stream, client_stream) = make_streams().await;
     let mut buffer = vec![0xFFu8; 512];
@@ -528,6 +529,58 @@ async fn oack_retransmit_after_dirty_receive_buffer() {
         Ok::<(), DownloadError>(())
     };
     let transfer = timeout(Duration::from_secs(5), async {
+        join!(send_coro, recv_coro)
+    })
+    .await;
+    let (send_result, recv_result) = transfer.expect("oack negotiation timed out");
+    assert!(send_result.is_ok(), "{send_result:?}");
+    assert!(recv_result.is_ok(), "{recv_result:?}");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn utimeout_shortens_oack_retransmit() {
+    let options = HashMap::from([(String::from("utimeout"), String::from("50000"))]);
+    let (ack_timeout, pairs) = AckTimeout::negotiate(&options);
+    let mut oack = OptionsAcknowledge::new();
+    for pair in pairs {
+        oack.push(pair);
+    }
+
+    let (server_stream, client_stream) = make_streams().await;
+    let mut buffer = vec![0xFFu8; 512];
+    let send_coro = send_oack_reliably(&oack, &server_stream, &ack_timeout, &mut buffer);
+    let recv_coro = async {
+        let mut read_buffer = vec![0u8; 512];
+        let first_size = match timeout(
+            Duration::from_secs(2),
+            client_stream.recv(&mut read_buffer, 4),
+        )
+        .await
+        {
+            Ok(result) => result?,
+            Err(_elapsed) => return Err(DownloadError("timeout".to_string())),
+        };
+        let first_oack = read_buffer[..first_size].to_vec();
+        let started = Instant::now();
+        let second_size = match timeout(
+            Duration::from_millis(500),
+            client_stream.recv(&mut read_buffer, 4),
+        )
+        .await
+        {
+            Ok(result) => result?,
+            Err(_elapsed) => return Err(DownloadError("timeout".to_string())),
+        };
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed < Duration::from_millis(500),
+            "retransmit took {elapsed:?}"
+        );
+        assert_eq!(&read_buffer[..second_size], first_oack.as_slice());
+        send_ack(&client_stream, 0).await?;
+        Ok::<(), DownloadError>(())
+    };
+    let transfer = timeout(Duration::from_secs(2), async {
         join!(send_coro, recv_coro)
     })
     .await;

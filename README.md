@@ -100,6 +100,7 @@ In this example:
 - An inactive NBD disk is automatically disconnected after a period of inactivity. This timeout is configurable via the `idle_timeout` daemon argument.
 - Supported TFTP options:
     - timeout 
+    - utimeout (nonstandard, microseconds, as in tftp-hpa; overrides timeout)
     - blksize
     - tsize
     - windowsize

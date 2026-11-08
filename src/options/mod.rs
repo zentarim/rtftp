@@ -12,6 +12,8 @@ static TSIZE: &str = "tsize";
 
 static TIMEOUT: &str = "timeout";
 
+static UTIMEOUT: &str = "utimeout";
+
 static BLKSIZE: &str = "blksize";
 
 const WINDOW_SIZE: &str = "windowsize";
@@ -23,8 +25,11 @@ const ROLLOVER_UPPER_CAP: usize = 1;
 const BLOCK_SIZE_BOTTOM_CAP: usize = 8;
 const BLOCK_SIZE_UPPER_CAP: usize = u16::MAX as usize;
 
-const ACK_TIMEOUT_BOTTOM_CAP: usize = 1;
-const ACK_TIMEOUT_UPPER_CAP: usize = 255;
+const ACK_TIMEOUT_BOTTOM_CAP: u64 = 1;
+const ACK_TIMEOUT_UPPER_CAP: u64 = 255;
+
+const UTIMEOUT_BOTTOM_CAP: u64 = 10_000;
+const UTIMEOUT_UPPER_CAP: u64 = 255_000_000;
 
 const WINDOW_SIZE_BOTTOM_CAP: usize = 1;
 const WINDOW_SIZE_UPPER_CAP: usize = u16::MAX as usize;
@@ -67,12 +72,14 @@ impl Default for Blksize {
 
 #[derive(Clone)]
 pub(super) struct AckTimeout {
-    timeout: usize,
+    timeout: Duration,
 }
 
 impl Default for AckTimeout {
     fn default() -> Self {
-        Self { timeout: 5 }
+        Self {
+            timeout: Duration::from_secs(5),
+        }
     }
 }
 
@@ -81,32 +88,70 @@ impl AckTimeout {
         &self,
         fut: F,
     ) -> Result<T, tokio::time::error::Elapsed> {
-        timeout(Duration::from_secs(self.timeout as u64), fut).await
+        timeout(self.timeout, fut).await
     }
 
-    pub(super) fn find_in(options: &HashMap<String, String>) -> Option<Self> {
-        if let Some(timeout_string) = options.get(TIMEOUT)
-            && let Ok(timeout) = timeout_string.parse::<usize>()
-        {
-            if (ACK_TIMEOUT_BOTTOM_CAP..=ACK_TIMEOUT_UPPER_CAP).contains(&timeout) {
-                return Some(Self { timeout });
-            } else {
-                eprintln!(
-                    "Requested timeout {timeout} doesn't fit in range {ACK_TIMEOUT_BOTTOM_CAP} .. ={ACK_TIMEOUT_UPPER_CAP}"
-                );
+    pub(super) fn negotiate(options: &HashMap<String, String>) -> (Self, Vec<(String, String)>) {
+        let seconds = requested_seconds(options);
+        let micros = requested_micros(options);
+        let mut pairs = Vec::new();
+        let timeout = match micros {
+            Some(micros) => {
+                if let Some(seconds) = seconds {
+                    if seconds * 1_000_000 == micros {
+                        pairs.push((String::from(TIMEOUT), seconds.to_string()));
+                    } else {
+                        eprintln!(
+                            "Requested timeout {seconds} ignored in favor of utimeout {micros}"
+                        );
+                    }
+                }
+                pairs.push((String::from(UTIMEOUT), micros.to_string()));
+                Duration::from_micros(micros)
             }
-        }
-        None
+            None => match seconds {
+                Some(seconds) => {
+                    pairs.push((String::from(TIMEOUT), seconds.to_string()));
+                    Duration::from_secs(seconds)
+                }
+                None => Duration::from_secs(5),
+            },
+        };
+        (Self { timeout }, pairs)
     }
+}
 
-    pub(super) fn as_key_pair(&self) -> (String, String) {
-        (String::from(TIMEOUT), self.timeout.to_string())
+fn requested_seconds(options: &HashMap<String, String>) -> Option<u64> {
+    if let Some(timeout_string) = options.get(TIMEOUT)
+        && let Ok(timeout) = timeout_string.parse::<u64>()
+    {
+        if (ACK_TIMEOUT_BOTTOM_CAP..=ACK_TIMEOUT_UPPER_CAP).contains(&timeout) {
+            return Some(timeout);
+        }
+        eprintln!(
+            "Requested timeout {timeout} doesn't fit in range {ACK_TIMEOUT_BOTTOM_CAP} .. ={ACK_TIMEOUT_UPPER_CAP}"
+        );
     }
+    None
+}
+
+fn requested_micros(options: &HashMap<String, String>) -> Option<u64> {
+    if let Some(timeout_string) = options.get(UTIMEOUT)
+        && let Ok(timeout) = timeout_string.parse::<u64>()
+    {
+        if (UTIMEOUT_BOTTOM_CAP..=UTIMEOUT_UPPER_CAP).contains(&timeout) {
+            return Some(timeout);
+        }
+        eprintln!(
+            "Requested utimeout {timeout} doesn't fit in range {UTIMEOUT_BOTTOM_CAP} .. ={UTIMEOUT_UPPER_CAP}"
+        );
+    }
+    None
 }
 
 impl Display for AckTimeout {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "[timeout: {}]", self.timeout)
+        write!(f, "[timeout: {}us]", self.timeout.as_micros())
     }
 }
 

@@ -943,3 +943,102 @@ async fn rollover_one_local() {
     assert!(wrapped_to_one);
     assert_eq!(read_data, data);
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn utimeout_matching_timeout_local() {
+    let source_ip = "127.0.0.22";
+    let server_dir = mk_tmp(utimeout_matching_timeout_local);
+    let file_name = "file.txt";
+    let file = server_dir.join(source_ip).join(file_name);
+    _write_file(&file, b"payload");
+    let running_server = start_rtftp(server_dir).await;
+    let client = running_server.open_paired_client(source_ip).await;
+    let send_options = HashMap::from([
+        ("timeout".to_string(), "2".to_string()),
+        ("utimeout".to_string(), "2000000".to_string()),
+    ]);
+    let sent_request = client
+        .send_optioned_read_request(file_name, &send_options)
+        .await
+        .unwrap();
+    let oack = sent_request.read_oack(5).await.unwrap();
+    assert_eq!(oack.fields(), send_options);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn utimeout_overrides_timeout_local() {
+    let source_ip = "127.0.0.23";
+    let server_dir = mk_tmp(utimeout_overrides_timeout_local);
+    let block_size = 512;
+    let data = make_payload(block_size * 4 + 7);
+    let file_name = "file.txt";
+    let file = server_dir.join(source_ip).join(file_name);
+    _write_file(&file, &data);
+    let running_server = start_rtftp(server_dir).await;
+    let client = running_server.open_paired_client(source_ip).await;
+    let send_options = HashMap::from([
+        ("timeout".to_string(), "2".to_string()),
+        ("utimeout".to_string(), "500000".to_string()),
+        ("blksize".to_string(), block_size.to_string()),
+    ]);
+    let sent_request = client
+        .send_optioned_read_request(file_name, &send_options)
+        .await
+        .unwrap();
+    let oack = sent_request.read_oack(5).await.unwrap();
+    assert_eq!(
+        oack.fields(),
+        HashMap::from([
+            ("utimeout".to_string(), "500000".to_string()),
+            ("blksize".to_string(), block_size.to_string()),
+        ])
+    );
+    let mut block = oack
+        .acknowledge()
+        .await
+        .unwrap()
+        .read_next(5)
+        .await
+        .unwrap();
+    let mut read_data = Vec::new();
+    loop {
+        let payload_len = block.data().len();
+        read_data.extend_from_slice(block.data());
+        if payload_len < block_size {
+            block.acknowledge().await.unwrap();
+            break;
+        }
+        block = block
+            .acknowledge()
+            .await
+            .unwrap()
+            .read_next(5)
+            .await
+            .unwrap();
+    }
+    assert_eq!(read_data, data);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn invalid_utimeout_falls_back_to_timeout_local() {
+    let source_ip = "127.0.0.24";
+    let server_dir = mk_tmp(invalid_utimeout_falls_back_to_timeout_local);
+    let file_name = "file.txt";
+    let file = server_dir.join(source_ip).join(file_name);
+    _write_file(&file, b"payload");
+    let running_server = start_rtftp(server_dir).await;
+    let client = running_server.open_paired_client(source_ip).await;
+    let send_options = HashMap::from([
+        ("timeout".to_string(), "2".to_string()),
+        ("utimeout".to_string(), "5000".to_string()),
+    ]);
+    let sent_request = client
+        .send_optioned_read_request(file_name, &send_options)
+        .await
+        .unwrap();
+    let oack = sent_request.read_oack(5).await.unwrap();
+    assert_eq!(
+        oack.fields(),
+        HashMap::from([("timeout".to_string(), "2".to_string())])
+    );
+}

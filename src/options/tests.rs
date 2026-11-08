@@ -19,31 +19,116 @@ fn find_tsize() {
     assert!(TSize::is_requested(&options));
 }
 
+fn negotiate_timeout(entries: &[(&str, &str)]) -> (Duration, HashMap<String, String>) {
+    let options = entries
+        .iter()
+        .map(|(name, value)| (name.to_string(), value.to_string()))
+        .collect();
+    let (ack_timeout, pairs) = AckTimeout::negotiate(&options);
+    (ack_timeout.timeout, pairs.into_iter().collect())
+}
+
 #[test]
 fn find_timeout() {
-    let mut options = HashMap::new();
-    let timeout_value: usize = 10;
-    options.insert(TIMEOUT.to_string(), timeout_value.to_string());
-    let timeout = AckTimeout::find_in(&options).unwrap();
-    assert_eq!(timeout.timeout, timeout_value);
+    let (timeout, pairs) = negotiate_timeout(&[(TIMEOUT, "10")]);
+    assert_eq!(timeout, Duration::from_secs(10));
+    assert_eq!(
+        pairs,
+        HashMap::from([(TIMEOUT.to_string(), "10".to_string())])
+    );
 }
 
 #[test]
 fn test_timeout_cap() {
-    let mut options = HashMap::new();
-    let upper_cap = ACK_TIMEOUT_UPPER_CAP + 1;
-    options.insert(TIMEOUT.to_string(), upper_cap.to_string());
-    let find_result = AckTimeout::find_in(&options);
-    assert!(find_result.is_none());
+    let upper_cap = (ACK_TIMEOUT_UPPER_CAP + 1).to_string();
+    let (timeout, pairs) = negotiate_timeout(&[(TIMEOUT, &upper_cap)]);
+    assert_eq!(timeout, Duration::from_secs(5));
+    assert!(pairs.is_empty());
 }
 
 #[test]
 fn test_timeout_bottom() {
-    let mut options = HashMap::new();
-    let bottom_cap = ACK_TIMEOUT_BOTTOM_CAP - 1;
-    options.insert(TIMEOUT.to_string(), bottom_cap.to_string());
-    let find_result = AckTimeout::find_in(&options);
-    assert!(find_result.is_none());
+    let bottom_cap = (ACK_TIMEOUT_BOTTOM_CAP - 1).to_string();
+    let (timeout, pairs) = negotiate_timeout(&[(TIMEOUT, &bottom_cap)]);
+    assert_eq!(timeout, Duration::from_secs(5));
+    assert!(pairs.is_empty());
+}
+
+#[test]
+fn utimeout_alone_sets_microseconds() {
+    let (timeout, pairs) = negotiate_timeout(&[(UTIMEOUT, "500000")]);
+    assert_eq!(timeout, Duration::from_micros(500_000));
+    assert_eq!(
+        pairs,
+        HashMap::from([(UTIMEOUT.to_string(), "500000".to_string())])
+    );
+}
+
+#[test]
+fn matching_timeout_and_utimeout_are_both_echoed() {
+    let (timeout, pairs) = negotiate_timeout(&[(TIMEOUT, "2"), (UTIMEOUT, "2000000")]);
+    assert_eq!(timeout, Duration::from_micros(2_000_000));
+    assert_eq!(
+        pairs,
+        HashMap::from([
+            (TIMEOUT.to_string(), "2".to_string()),
+            (UTIMEOUT.to_string(), "2000000".to_string()),
+        ])
+    );
+}
+
+#[test]
+fn utimeout_overrides_a_different_timeout() {
+    let (timeout, pairs) = negotiate_timeout(&[(TIMEOUT, "2"), (UTIMEOUT, "500000")]);
+    assert_eq!(timeout, Duration::from_micros(500_000));
+    assert_eq!(
+        pairs,
+        HashMap::from([(UTIMEOUT.to_string(), "500000".to_string())])
+    );
+}
+
+#[test]
+fn invalid_utimeout_falls_back_to_timeout() {
+    let (timeout, pairs) = negotiate_timeout(&[(TIMEOUT, "2"), (UTIMEOUT, "5000")]);
+    assert_eq!(timeout, Duration::from_secs(2));
+    assert_eq!(
+        pairs,
+        HashMap::from([(TIMEOUT.to_string(), "2".to_string())])
+    );
+}
+
+#[test]
+fn invalid_timeout_and_utimeout_use_the_default() {
+    let (timeout, pairs) = negotiate_timeout(&[(TIMEOUT, "0"), (UTIMEOUT, "abc")]);
+    assert_eq!(timeout, Duration::from_secs(5));
+    assert!(pairs.is_empty());
+}
+
+#[test]
+fn absent_timeout_options_use_the_default() {
+    let (timeout, pairs) = negotiate_timeout(&[]);
+    assert_eq!(timeout, Duration::from_secs(5));
+    assert!(pairs.is_empty());
+}
+
+#[test]
+fn utimeout_accepts_range_boundaries() {
+    for value in [UTIMEOUT_BOTTOM_CAP, UTIMEOUT_UPPER_CAP] {
+        let text = value.to_string();
+        let (timeout, pairs) = negotiate_timeout(&[(UTIMEOUT, &text)]);
+        assert_eq!(timeout, Duration::from_micros(value));
+        assert_eq!(pairs, HashMap::from([(UTIMEOUT.to_string(), text)]));
+    }
+}
+
+#[test]
+fn utimeout_rejects_values_outside_the_range() {
+    for value in [UTIMEOUT_BOTTOM_CAP - 1, UTIMEOUT_UPPER_CAP + 1] {
+        let text = value.to_string();
+        let (timeout, pairs) = negotiate_timeout(&[(UTIMEOUT, &text)]);
+        assert_eq!(timeout, Duration::from_secs(5));
+        assert!(pairs.is_empty());
+    }
 }
 
 #[test]
