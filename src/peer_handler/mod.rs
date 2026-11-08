@@ -521,13 +521,10 @@ async fn send_reliably(
             }
         }
         match ack_timeout
-            .timeout(wait_for_window_ack(
-                datagram_stream,
-                buffer,
-                window_first,
-                count,
-                rollover,
-            ))
+            .timeout(
+                attempt,
+                wait_for_window_ack(datagram_stream, buffer, window_first, count, rollover),
+            )
             .await
         {
             Ok(Ok(WindowWait::Accepted(acknowledged))) => return Ok(acknowledged),
@@ -569,7 +566,7 @@ async fn send_oack_reliably(
         };
         datagram_stream.send(&buffer[..oack_size]).await?;
         match ack_timeout
-            .timeout(read_acknowledge(datagram_stream, buffer))
+            .timeout(attempt, read_acknowledge(datagram_stream, buffer))
             .await
         {
             Ok(Ok(ack_num)) if ack_num == oack_index => return Ok(()),

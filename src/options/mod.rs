@@ -84,11 +84,24 @@ impl Default for AckTimeout {
 }
 
 impl AckTimeout {
+    /// 10ms is the smallest negotiated base, and 10ms × 2^15 is already past 255s.
+    const BACKOFF_CAP_EXPONENT: u32 = 15;
+
+    fn duration(&self, attempt: u16) -> Duration {
+        let cap = Duration::from_secs(ACK_TIMEOUT_UPPER_CAP);
+        let exponent = u32::from(attempt.saturating_sub(1));
+        if exponent >= Self::BACKOFF_CAP_EXPONENT {
+            return cap;
+        }
+        self.timeout.saturating_mul(1u32 << exponent).min(cap)
+    }
+
     pub(super) async fn timeout<T, F: Future<Output = T>>(
         &self,
+        attempt: u16,
         fut: F,
     ) -> Result<T, tokio::time::error::Elapsed> {
-        timeout(self.timeout, fut).await
+        timeout(self.duration(attempt), fut).await
     }
 
     pub(super) fn negotiate(options: &HashMap<String, String>) -> (Self, Vec<(String, String)>) {

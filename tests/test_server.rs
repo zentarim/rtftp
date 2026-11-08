@@ -292,90 +292,36 @@ async fn change_timeout() {
     let start = time::Instant::now();
     assert_eq!(received_options, send_options);
     let expected_oack = b"\x00\x06timeout\x001\x00";
-    let mut retry_buffers = vec![
-        (Vec::new(), 0u64),
-        (Vec::new(), 0u64),
-        (Vec::new(), 0u64),
-        (Vec::new(), 0u64),
-        (Vec::new(), 0u64),
-        (Vec::new(), 0u64),
-    ];
-    let local_read_timeout = 2usize;
     let mut buffer = [0u8; _BUFFER_SIZE];
-    for (retry_message, timestamp) in &mut retry_buffers {
-        if let Ok(read_bytes) = oack
+    // Waits double from the negotiated 1s: 1, 2, 4, 8, then the error follows 16s.
+    let mut elapsed_secs = 0u64;
+    for wait_secs in [1u64, 2, 4, 8] {
+        elapsed_secs += wait_secs;
+        let read_timeout = usize::try_from(wait_secs).unwrap() + 2;
+        let read_bytes = oack
             .datagram_stream
-            .recv(&mut buffer, local_read_timeout, 0)
+            .recv(&mut buffer, read_timeout, 0)
             .await
-        {
-            (*retry_message).extend_from_slice(&buffer[..read_bytes]);
-            *timestamp = time::Instant::now().duration_since(start).as_secs();
-            eprintln!(
-                "{} {read_bytes}",
-                time::Instant::now().duration_since(start).as_secs()
-            );
-        }
+            .unwrap();
+        assert_eq!(&buffer[..read_bytes], expected_oack.as_slice());
+        let timestamp = time::Instant::now().duration_since(start).as_secs();
+        assert_eq!(
+            timestamp, elapsed_secs,
+            "retransmit after {wait_secs}s landed at {timestamp}s"
+        );
     }
+    elapsed_secs += 16;
+    let read_bytes = oack.datagram_stream.recv(&mut buffer, 18, 0).await.unwrap();
     assert_eq!(
-        retry_buffers[0].0, expected_oack,
-        "1: Received: {:?}, Expected: {:?}",
-        retry_buffers[0].0, expected_oack
+        &buffer[..read_bytes],
+        b"\x00\x05\x00\x00Send timeout occurred\x00".as_slice()
     );
+    let timestamp = time::Instant::now().duration_since(start).as_secs();
     assert_eq!(
-        retry_buffers[0].1, 1,
-        "1: Timestamp mismatch. Received: {}, Expected: {}",
-        retry_buffers[0].1, 1
+        timestamp, elapsed_secs,
+        "error after the 16s wait landed at {timestamp}s"
     );
-    assert_eq!(
-        retry_buffers[1].0, expected_oack,
-        "2: Received: {:?}, Expected: {:?}",
-        retry_buffers[1].0, expected_oack
-    );
-    assert_eq!(
-        retry_buffers[1].1, 2,
-        "2: Timestamp mismatch. Received: {}, Expected: {}",
-        retry_buffers[1].1, 2
-    );
-    assert_eq!(
-        retry_buffers[2].0, expected_oack,
-        "3: Received: {:?}, Expected: {:?}",
-        retry_buffers[2].0, expected_oack
-    );
-    assert_eq!(
-        retry_buffers[2].1, 3,
-        "3: Timestamp mismatch. Received: {}, Expected: {}",
-        retry_buffers[2].1, 3
-    );
-    assert_eq!(
-        retry_buffers[3].0, expected_oack,
-        "4: Received: {:?}, Expected: {:?}",
-        retry_buffers[3].0, expected_oack
-    );
-    assert_eq!(
-        retry_buffers[3].1, 4,
-        "4: Timestamp mismatch. Received: {}, Expected: {}",
-        retry_buffers[3].1, 4
-    );
-    assert_eq!(
-        retry_buffers[4].0, b"\x00\x05\x00\x00Send timeout occurred\x00",
-        "5: Received: {:?}, Expected: {:?}",
-        retry_buffers[4].0, b"\x00\x05\x00\x00Send timeout occurred\x00"
-    );
-    assert_eq!(
-        retry_buffers[4].1, 5,
-        "5: Timestamp mismatch. Received: {}, Expected: {}",
-        retry_buffers[4].1, 5
-    );
-    assert_eq!(
-        retry_buffers[5].0, b"",
-        "5: Received: {:?}, Expected: {:?}",
-        retry_buffers[5].0, b""
-    );
-    assert_eq!(
-        retry_buffers[5].1, 0,
-        "5: Timestamp mismatch. Received: {}, Expected: {}",
-        retry_buffers[5].1, 0
-    );
+    assert!(oack.datagram_stream.recv(&mut buffer, 1, 0).await.is_err());
 }
 
 #[tokio::test(flavor = "current_thread")]

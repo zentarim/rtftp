@@ -131,6 +131,62 @@ fn utimeout_rejects_values_outside_the_range() {
     }
 }
 
+fn negotiated_ack_timeout(entries: &[(&str, &str)]) -> AckTimeout {
+    let options = entries
+        .iter()
+        .map(|(name, value)| (name.to_string(), value.to_string()))
+        .collect();
+    AckTimeout::negotiate(&options).0
+}
+
+fn assert_backoff(entries: &[(&str, &str)], expected: [Duration; 5]) {
+    let ack_timeout = negotiated_ack_timeout(entries);
+    for (index, expected_wait) in expected.into_iter().enumerate() {
+        let attempt = u16::try_from(index + 1).unwrap();
+        assert_eq!(ack_timeout.duration(attempt), expected_wait);
+    }
+}
+
+#[test]
+fn backoff_doubles_a_five_second_timeout() {
+    assert_backoff(
+        &[(TIMEOUT, "5")],
+        [5, 10, 20, 40, 80].map(Duration::from_secs),
+    );
+}
+
+#[test]
+fn backoff_clamps_long_timeouts_at_255_seconds() {
+    for (seconds, expected) in [
+        (128, [128, 255, 255, 255, 255]),
+        (200, [200, 255, 255, 255, 255]),
+        (255, [255, 255, 255, 255, 255]),
+    ] {
+        let text = seconds.to_string();
+        assert_backoff(&[(TIMEOUT, &text)], expected.map(Duration::from_secs));
+    }
+}
+
+#[test]
+fn backoff_doubles_a_50_millisecond_utimeout() {
+    assert_backoff(
+        &[(UTIMEOUT, "50000")],
+        [50, 100, 200, 400, 800].map(Duration::from_millis),
+    );
+}
+
+#[test]
+fn backoff_doubles_utimeout_range_boundaries() {
+    assert_backoff(
+        &[(UTIMEOUT, "10000")],
+        [10, 20, 40, 80, 160].map(Duration::from_millis),
+    );
+    assert_backoff(
+        &[(UTIMEOUT, "255000000")],
+        [255; 5].map(Duration::from_secs),
+    );
+}
+
 #[test]
 fn test_block_size_bottom() {
     let mut options = HashMap::new();

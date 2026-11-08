@@ -589,6 +589,76 @@ async fn utimeout_shortens_oack_retransmit() {
     assert!(recv_result.is_ok(), "{recv_result:?}");
 }
 
+#[tokio::test(flavor = "current_thread")]
+async fn utimeout_backoff_doubles_oack_retransmit() {
+    let options = HashMap::from([(String::from("utimeout"), String::from("50000"))]);
+    let (ack_timeout, pairs) = AckTimeout::negotiate(&options);
+    let mut oack = OptionsAcknowledge::new();
+    for pair in pairs {
+        oack.push(pair);
+    }
+
+    let (server_stream, client_stream) = make_streams().await;
+    let mut buffer = vec![0xFFu8; 512];
+    let send_coro = send_oack_reliably(&oack, &server_stream, &ack_timeout, &mut buffer);
+    let recv_coro = async {
+        let mut read_buffer = vec![0u8; 512];
+        let first_size = match timeout(
+            Duration::from_secs(2),
+            client_stream.recv(&mut read_buffer, 4),
+        )
+        .await
+        {
+            Ok(result) => result?,
+            Err(_elapsed) => return Err(DownloadError("timeout".to_string())),
+        };
+        let first_oack = read_buffer[..first_size].to_vec();
+
+        let second_started = Instant::now();
+        let second_size = match timeout(
+            Duration::from_millis(200),
+            client_stream.recv(&mut read_buffer, 4),
+        )
+        .await
+        {
+            Ok(result) => result?,
+            Err(_elapsed) => return Err(DownloadError("timeout".to_string())),
+        };
+        let first_gap = second_started.elapsed();
+        assert!(
+            first_gap < Duration::from_millis(200),
+            "first retransmit took {first_gap:?}"
+        );
+        assert_eq!(&read_buffer[..second_size], first_oack.as_slice());
+
+        let third_started = Instant::now();
+        let third_size = match timeout(
+            Duration::from_millis(400),
+            client_stream.recv(&mut read_buffer, 4),
+        )
+        .await
+        {
+            Ok(result) => result?,
+            Err(_elapsed) => return Err(DownloadError("timeout".to_string())),
+        };
+        let second_gap = third_started.elapsed();
+        assert!(
+            second_gap > Duration::from_millis(80) && second_gap < Duration::from_millis(400),
+            "second retransmit took {second_gap:?}"
+        );
+        assert_eq!(&read_buffer[..third_size], first_oack.as_slice());
+        send_ack(&client_stream, 0).await?;
+        Ok::<(), DownloadError>(())
+    };
+    let transfer = timeout(Duration::from_secs(2), async {
+        join!(send_coro, recv_coro)
+    })
+    .await;
+    let (send_result, recv_result) = transfer.expect("oack negotiation timed out");
+    assert!(send_result.is_ok(), "{send_result:?}");
+    assert!(recv_result.is_ok(), "{recv_result:?}");
+}
+
 async fn transfer_across_block_wrap(rollover: Rollover, after_wrap: u16) {
     let block_size = 8;
     let window_size = 7;
