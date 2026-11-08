@@ -1,7 +1,7 @@
 use crate::datagram_stream::DatagramStream;
 use crate::fs::{OpenedFile, RootKind};
 use crate::messages::OptionsAcknowledge;
-use crate::options::AckTimeout;
+use crate::options::{AckTimeout, Rollover};
 use crate::peer_handler::{
     ACK, AckClass, DATA, Window, classify_ack, roots_for_peer, send_file, send_oack_reliably,
 };
@@ -147,6 +147,45 @@ async fn download_stream(
     Ok(read_data)
 }
 
+async fn download_blocks(
+    datagram_stream: &DatagramStream,
+    block_size: u16,
+    window_size: u16,
+) -> Result<(Vec<u8>, Vec<u16>), DownloadError> {
+    let mut read_data: Vec<u8> = Vec::new();
+    let mut block_numbers: Vec<u16> = Vec::new();
+    let block_header_size = 4;
+    let expected_message_size = block_size as usize + block_header_size;
+    let mut buffer = vec![0u8; expected_message_size];
+    let mut last_received_block_index: u16 = 0;
+    let mut done = false;
+    while !done {
+        for _ in 0..window_size {
+            let recv_fut = datagram_stream.recv(&mut buffer, block_header_size);
+            let received_bytes = match timeout(Duration::from_secs(5), recv_fut).await {
+                Ok(result) => result?,
+                Err(_timeout) => return Err(DownloadError("timeout".to_string())),
+            };
+            let opcode = u16::from_be_bytes(buffer[..2].try_into().unwrap());
+            if opcode != DATA {
+                return Err(DownloadError(format!("Wrong opcode received: {opcode}")));
+            }
+            last_received_block_index = u16::from_be_bytes(buffer[2..4].try_into().unwrap());
+            block_numbers.push(last_received_block_index);
+            read_data.extend_from_slice(&buffer[block_header_size..received_bytes]);
+            if received_bytes < expected_message_size {
+                done = true;
+                break;
+            }
+        }
+        buffer[0] = 0;
+        buffer[1] = ACK as u8;
+        buffer[2..4].copy_from_slice(&last_received_block_index.to_be_bytes());
+        datagram_stream.send(&buffer[..block_header_size]).await?;
+    }
+    Ok((read_data, block_numbers))
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn send_aligned_data() {
     let test_data = generate_data(100);
@@ -155,7 +194,7 @@ async fn send_aligned_data() {
     let ack_timeout = AckTimeout::default();
     let block_size = 100;
     let window_size = 1;
-    let window = Window::new(block_size, window_size);
+    let window = Window::new(block_size, window_size, Rollover::default());
     let mut buffer = vec![0; 1024];
     let send_coro = send_file(
         opened_file,
@@ -176,7 +215,7 @@ async fn send_unaligned_data() {
     let ack_timeout = AckTimeout::default();
     let block_size = 100;
     let window_size = 1;
-    let window = Window::new(block_size, window_size);
+    let window = Window::new(block_size, window_size, Rollover::default());
     let mut buffer = vec![0; 1024];
     let send_coro = send_file(
         opened_file,
@@ -197,7 +236,7 @@ async fn send_aligned_data_windowed() {
     let ack_timeout = AckTimeout::default();
     let block_size = 100;
     let window_size = 5;
-    let window = Window::new(block_size, window_size);
+    let window = Window::new(block_size, window_size, Rollover::default());
     let mut buffer = vec![0; 1024];
     let send_coro = send_file(
         opened_file,
@@ -218,7 +257,7 @@ async fn send_unaligned_data_windowed() {
     let ack_timeout = AckTimeout::default();
     let block_size = 100;
     let window_size = 5;
-    let window = Window::new(block_size, window_size);
+    let window = Window::new(block_size, window_size, Rollover::default());
     let mut buffer = vec![0; 1024];
     let send_coro = send_file(
         opened_file,
@@ -263,7 +302,7 @@ async fn unusable_nbd_config_skips_default_root() {
 
 #[test]
 fn window_size_matches_buffer_count() {
-    let window = Window::new(16, 3);
+    let window = Window::new(16, 3, Rollover::default());
     assert_eq!(window.size(), 3);
 }
 
@@ -271,29 +310,66 @@ fn window_size_matches_buffer_count() {
 fn ack_inside_window_across_block_wrap() {
     let window_first = 65534u64;
     let count = 4;
+    let rollover = Rollover::default();
     assert_eq!(
-        classify_ack(65534, window_first, count),
+        classify_ack(65534, window_first, count, rollover),
         AckClass::InWindow(65534)
     );
     assert_eq!(
-        classify_ack(65535, window_first, count),
+        classify_ack(65535, window_first, count, rollover),
         AckClass::InWindow(65535)
     );
     assert_eq!(
-        classify_ack(0, window_first, count),
+        classify_ack(0, window_first, count, rollover),
         AckClass::InWindow(65536)
     );
     assert_eq!(
-        classify_ack(1, window_first, count),
+        classify_ack(1, window_first, count, rollover),
         AckClass::InWindow(65537)
     );
-    assert_eq!(classify_ack(2, window_first, count), AckClass::Other);
-    assert_eq!(classify_ack(65533, window_first, count), AckClass::Previous);
+    assert_eq!(
+        classify_ack(2, window_first, count, rollover),
+        AckClass::Other
+    );
+    assert_eq!(
+        classify_ack(65533, window_first, count, rollover),
+        AckClass::Previous
+    );
+}
+
+#[test]
+fn ack_inside_window_across_rollover_one() {
+    let rollover =
+        Rollover::find_in(&HashMap::from([("rollover".to_string(), "1".to_string())])).unwrap();
+    let window_first = 65534u64;
+    let count = 4;
+    assert_eq!(
+        classify_ack(1, window_first, count, rollover),
+        AckClass::InWindow(65536)
+    );
+    assert_eq!(
+        classify_ack(2, window_first, count, rollover),
+        AckClass::InWindow(65537)
+    );
+    assert_eq!(
+        classify_ack(0, window_first, count, rollover),
+        AckClass::Other
+    );
+    assert_eq!(
+        classify_ack(3, window_first, count, rollover),
+        AckClass::Other
+    );
+    assert_eq!(
+        classify_ack(65533, window_first, count, rollover),
+        AckClass::Previous
+    );
+    assert_eq!(classify_ack(65535, 65536, 1, rollover), AckClass::Previous);
+    assert_eq!(classify_ack(0, 1, 1, rollover), AckClass::Previous);
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn window_slots_stay_distinct_across_sequence_wrap() {
-    let mut window = Window::new(4, 4);
+    let mut window = Window::new(4, 4, Rollover::default());
     let data: Vec<u8> = (0..16).collect();
     let mut opened_file = VirtualOpenedFile::new(data.clone());
     for seq in 65533u64..65537 {
@@ -347,7 +423,7 @@ async fn duplicate_previous_ack_retransmits() {
     let (server_stream, client_stream) = make_streams().await;
     let ack_timeout = AckTimeout::default();
     let block_size = 100;
-    let window = Window::new(block_size, 1);
+    let window = Window::new(block_size, 1, Rollover::default());
     let mut buffer = vec![0; 1024];
     let send_coro = send_file(
         opened_file,
@@ -385,7 +461,7 @@ async fn ack_beyond_sent_blocks_is_ignored() {
     let (server_stream, client_stream) = make_streams().await;
     let ack_timeout = AckTimeout::default();
     let block_size = 100;
-    let window = Window::new(block_size, 1);
+    let window = Window::new(block_size, 1, Rollover::default());
     let mut buffer = vec![0; 1024];
     let send_coro = send_file(
         opened_file,
@@ -458,4 +534,51 @@ async fn oack_retransmit_after_dirty_receive_buffer() {
     let (send_result, recv_result) = transfer.expect("oack negotiation timed out");
     assert!(send_result.is_ok(), "{send_result:?}");
     assert!(recv_result.is_ok(), "{recv_result:?}");
+}
+
+async fn transfer_across_block_wrap(rollover: Rollover, after_wrap: u16) {
+    let block_size = 8;
+    let window_size = 7;
+    let test_data = generate_data(block_size as usize * 65540 + 3);
+    let opened_file = VirtualOpenedFile::new(test_data.clone());
+    let (server_stream, client_stream) = make_streams().await;
+    let ack_timeout = AckTimeout::default();
+    let window = Window::new(block_size, window_size, rollover);
+    let mut buffer = vec![0; 1024];
+    let send_coro = send_file(
+        opened_file,
+        &server_stream,
+        window,
+        ack_timeout,
+        &mut buffer,
+    );
+    let recv_coro = download_blocks(&client_stream, block_size, window_size);
+    let transfer = timeout(Duration::from_secs(60), async {
+        join!(send_coro, recv_coro)
+    })
+    .await;
+    let (send_result, recv_result) = transfer.expect("transfer timed out");
+    assert!(send_result.is_ok(), "{send_result:?}");
+    let (data, block_numbers) = recv_result.unwrap();
+    assert_eq!(data, test_data);
+    let wrap_at = block_numbers
+        .iter()
+        .position(|number| *number == 65535)
+        .expect("block 65535 was sent");
+    assert_eq!(block_numbers[wrap_at + 1], after_wrap);
+    if after_wrap == 1 {
+        assert!(!block_numbers.contains(&0));
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn rollover_zero_wraps_block_numbers_to_zero() {
+    transfer_across_block_wrap(Rollover::default(), 0).await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn rollover_one_wraps_block_numbers_to_one() {
+    let rollover =
+        Rollover::find_in(&HashMap::from([("rollover".to_string(), "1".to_string())])).unwrap();
+    transfer_across_block_wrap(rollover, 1).await;
 }

@@ -405,7 +405,12 @@ impl Block {
     pub(crate) fn data(&self) -> &[u8] {
         &self.read_buffer[_U16_SIZE * 2..self.read_bytes]
     }
-    async fn acknowledge(mut self) -> Result<SentACK, TFTPClientError<Self>> {
+
+    pub(crate) fn block_number(&self) -> u16 {
+        u16::from_be_bytes(self.read_buffer[2..4].try_into().unwrap())
+    }
+
+    pub(crate) async fn acknowledge(mut self) -> Result<SentACK, TFTPClientError<Self>> {
         let mut write_cursor = WriteCursor::new(&mut self.write_buffer);
         _ = write_cursor.put_ushort(_ACK).unwrap();
         let block_num = u16::from_be_bytes([self.read_buffer[2], self.read_buffer[3]]);

@@ -885,3 +885,61 @@ async fn file_window_partial_ack() {
     let forth_block_num = u16::from_be_bytes(buffer[2..4].try_into().unwrap());
     assert_eq!(forth_block_num, 4);
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn rollover_one_local() {
+    let source_ip = "127.0.0.21";
+    let server_dir = mk_tmp(rollover_one_local);
+    let block_size = 8;
+    let payload_len = block_size * 65540 + 3;
+    let data = make_payload(payload_len);
+    let file_name = "file.txt";
+    let file = server_dir.join(source_ip).join(file_name);
+    _write_file(&file, &data);
+    let running_server = start_rtftp(server_dir.clone()).await;
+    let client = running_server.open_paired_client(source_ip).await;
+    let send_options = HashMap::from([
+        ("blksize".to_string(), block_size.to_string()),
+        ("rollover".to_string(), "1".to_string()),
+    ]);
+    let sent_request = client
+        .send_optioned_read_request(file_name, &send_options)
+        .await
+        .unwrap();
+    let oack = sent_request.read_oack(5).await.unwrap();
+    assert_eq!(oack.fields(), send_options);
+    let mut block = oack
+        .acknowledge()
+        .await
+        .unwrap()
+        .read_next(5)
+        .await
+        .unwrap();
+    let mut read_data = Vec::new();
+    let mut previous_block = None;
+    let mut wrapped_to_one = false;
+    loop {
+        let block_number = block.block_number();
+        if previous_block == Some(65535) {
+            assert_eq!(block_number, 1);
+            wrapped_to_one = true;
+        }
+        assert_ne!(block_number, 0);
+        previous_block = Some(block_number);
+        let payload_len = block.data().len();
+        read_data.extend_from_slice(block.data());
+        if payload_len < block_size {
+            block.acknowledge().await.unwrap();
+            break;
+        }
+        block = block
+            .acknowledge()
+            .await
+            .unwrap()
+            .read_next(5)
+            .await
+            .unwrap();
+    }
+    assert!(wrapped_to_one);
+    assert_eq!(read_data, data);
+}

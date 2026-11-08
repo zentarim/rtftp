@@ -16,6 +16,10 @@ static BLKSIZE: &str = "blksize";
 
 const WINDOW_SIZE: &str = "windowsize";
 
+const ROLLOVER: &str = "rollover";
+
+const ROLLOVER_UPPER_CAP: usize = 1;
+
 const BLOCK_SIZE_BOTTOM_CAP: usize = 8;
 const BLOCK_SIZE_UPPER_CAP: usize = u16::MAX as usize;
 
@@ -152,8 +156,81 @@ impl WindowSize {
     pub(super) fn get_size(&self) -> usize {
         self.0
     }
+
+    pub(super) fn limited_to(self, max: usize) -> Self {
+        Self(self.0.min(max))
+    }
+
     pub(super) fn as_key_pair(&self) -> (String, String) {
         (String::from(WINDOW_SIZE), self.0.to_string())
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) struct Rollover(u16);
+
+impl Rollover {
+    pub(super) fn find_in(options: &HashMap<String, String>) -> Option<Self> {
+        if let Some(rollover_string) = options.get(ROLLOVER)
+            && let Ok(rollover) = rollover_string.parse::<usize>()
+        {
+            if (0..=ROLLOVER_UPPER_CAP).contains(&rollover) {
+                return Some(Self(rollover as u16));
+            }
+            eprintln!(
+                "Requested rollover {rollover} doesn't fit in range 0 .. ={ROLLOVER_UPPER_CAP}"
+            );
+        }
+        None
+    }
+
+    pub(super) fn as_key_pair(&self) -> (String, String) {
+        (String::from(ROLLOVER), self.0.to_string())
+    }
+
+    pub(super) fn block_number(self, seq: u64) -> u16 {
+        if seq == 0 {
+            return 0;
+        }
+        let cycle = self.cycle();
+        if self.0 == 0 {
+            (seq % cycle) as u16
+        } else {
+            (((seq - 1) % cycle) + 1) as u16
+        }
+    }
+
+    pub(super) fn max_window_size(self) -> usize {
+        if self.0 == 0 {
+            WINDOW_SIZE_UPPER_CAP
+        } else {
+            WINDOW_SIZE_UPPER_CAP - 1
+        }
+    }
+
+    pub(super) fn distance_in_cycle(self, received: u16, window_first: u64) -> Option<u64> {
+        let position = self.wire_position(received)?;
+        let cycle = self.cycle();
+        let first_position = self.seq_position(window_first);
+        Some((position + cycle - first_position) % cycle)
+    }
+
+    fn cycle(self) -> u64 {
+        if self.0 == 0 { 65_536 } else { 65_535 }
+    }
+
+    fn wire_position(self, block: u16) -> Option<u64> {
+        if self.0 == 0 {
+            Some(u64::from(block))
+        } else if block == 0 {
+            None
+        } else {
+            Some(u64::from(block) - 1)
+        }
+    }
+
+    fn seq_position(self, seq: u64) -> u64 {
+        seq.wrapping_sub(u64::from(self.0)) % self.cycle()
     }
 }
 

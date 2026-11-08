@@ -5,7 +5,7 @@ use crate::fs::{OpenedFile, RootKind};
 use crate::local_fs::LocalRoot;
 use crate::messages::{OptionsAcknowledge, ReadRequest};
 use crate::nbd_disk::{NbdRoot, open_nbd_root};
-use crate::options::{AckTimeout, Blksize, TSize, WindowSize};
+use crate::options::{AckTimeout, Blksize, Rollover, TSize, WindowSize};
 use std::borrow::Borrow;
 use std::collections::HashMap;
 use std::fmt;
@@ -53,16 +53,22 @@ async fn fire_error<D: Borrow<DatagramStream>>(
 struct Window {
     block_size: u16,
     buffers: Vec<Vec<u8>>,
+    rollover: Rollover,
 }
 
 impl Window {
-    fn new(block_size: u16, window_size: u16) -> Self {
+    fn new(block_size: u16, window_size: u16, rollover: Rollover) -> Self {
         Self {
             block_size,
             buffers: (0..window_size)
                 .map(|_| vec![0; block_size as usize + 2 * size_of::<u16>()])
                 .collect(),
+            rollover,
         }
+    }
+
+    fn rollover(&self) -> Rollover {
+        self.rollover
     }
 
     fn size(&self) -> u16 {
@@ -120,8 +126,9 @@ async fn send_file<O: OpenedFile>(
         let mut to_send = unacknowledged_count;
         while to_send < window.size() {
             last_read_seq += 1;
+            let block_number = window.rollover().block_number(last_read_seq);
             if let Ok((read_bytes, is_last)) = window
-                .push_block(&mut opened_file, last_read_seq, last_read_seq as u16)
+                .push_block(&mut opened_file, last_read_seq, block_number)
                 .await
             {
                 to_send += 1;
@@ -198,23 +205,27 @@ async fn wait_for_window_ack(
     buffer: &mut [u8],
     window_first: u64,
     count: u16,
+    rollover: Rollover,
 ) -> Result<WindowWait, RecvError> {
     let window_end = window_first + count as u64;
     loop {
         match read_acknowledge(datagram_stream, buffer).await {
-            Ok(received_ack) => match classify_ack(received_ack, window_first, count) {
-                AckClass::InWindow(acknowledged) => return Ok(WindowWait::Accepted(acknowledged)),
+            Ok(received_ack) => match classify_ack(received_ack, window_first, count, rollover) {
+                AckClass::InWindow(acknowledged) => {
+                    return Ok(WindowWait::Accepted(acknowledged));
+                }
                 AckClass::Previous => {
                     eprintln!(
                         "{datagram_stream}: Duplicate ACK {received_ack}, retransmitting {}",
-                        window_first as u16
+                        rollover.block_number(window_first)
                     );
                     return Ok(WindowWait::Retransmit);
                 }
                 AckClass::Other => {
                     eprintln!(
                         "{datagram_stream}: Ignore ACK {received_ack} outside {} .. {}",
-                        window_first as u16, window_end as u16
+                        rollover.block_number(window_first),
+                        rollover.block_number(window_end)
                     );
                 }
             },
@@ -237,11 +248,13 @@ enum AckClass {
     Other,
 }
 
-fn classify_ack(received_ack: u16, window_first: u64, count: u16) -> AckClass {
-    let distance = received_ack.wrapping_sub(window_first as u16);
-    if distance < count {
-        AckClass::InWindow(window_first + distance as u64)
-    } else if received_ack == (window_first.wrapping_sub(1)) as u16 {
+fn classify_ack(received_ack: u16, window_first: u64, count: u16, rollover: Rollover) -> AckClass {
+    if let Some(distance) = rollover.distance_in_cycle(received_ack, window_first)
+        && distance < count as u64
+    {
+        return AckClass::InWindow(window_first + distance);
+    }
+    if received_ack == rollover.block_number(window_first.wrapping_sub(1)) {
         AckClass::Previous
     } else {
         AckClass::Other
@@ -496,12 +509,13 @@ async fn send_reliably(
     count: u16,
 ) -> Result<u64, SendError> {
     let window_end = window_first + count as u64;
+    let rollover = window.rollover();
     for attempt in 1..=SEND_ATTEMPTS {
         for block_seq in window_first..window_end {
             if let Err(send_error) = window.send(block_seq, datagram_stream).await {
                 eprintln!(
                     "{datagram_stream}: Network error while sending block {}: {send_error}",
-                    block_seq as u16
+                    rollover.block_number(block_seq)
                 );
                 return Err(SendError::Network);
             }
@@ -512,6 +526,7 @@ async fn send_reliably(
                 buffer,
                 window_first,
                 count,
+                rollover,
             ))
             .await
         {
@@ -524,7 +539,8 @@ async fn send_reliably(
             Err(_elapsed) => {
                 eprintln!(
                     "{datagram_stream}: Timeout waiting for {} .. {}, attempt {attempt}",
-                    window_first as u16, window_end as u16
+                    rollover.block_number(window_first),
+                    rollover.block_number(window_end)
                 );
             }
         }
@@ -617,14 +633,28 @@ async fn negotiate_options<O: OpenedFile>(
             }
         }
     };
+    let rollover = Rollover::find_in(options);
+    let rollover_value = rollover.unwrap_or_default();
     let window_size = {
         if let Some(window_size) = WindowSize::find_in(options) {
-            oack.push(window_size.as_key_pair());
-            window_size
+            let requested = window_size.get_size();
+            let limited = window_size.limited_to(rollover_value.max_window_size());
+            if limited.get_size() != requested {
+                eprintln!(
+                    "{datagram_stream}: Requested window size {requested} capped to {} for rollover {}",
+                    limited.get_size(),
+                    rollover_value.as_key_pair().1
+                );
+            }
+            oack.push(limited.as_key_pair());
+            limited
         } else {
             Default::default()
         }
     };
+    if let Some(rollover) = rollover {
+        oack.push(rollover.as_key_pair());
+    }
     if oack.has_options()
         && let Err(oack_negotiation_error) =
             send_oack_reliably(&oack, datagram_stream, &ack_timeout, buffer).await
@@ -632,6 +662,10 @@ async fn negotiate_options<O: OpenedFile>(
         eprintln!("{datagram_stream}: {oack_negotiation_error}");
         return None;
     };
-    let window = Window::new(block_size.get_size() as u16, window_size.get_size() as u16);
+    let window = Window::new(
+        block_size.get_size() as u16,
+        window_size.get_size() as u16,
+        rollover_value,
+    );
     Some((window, ack_timeout))
 }
