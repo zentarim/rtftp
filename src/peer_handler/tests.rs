@@ -269,20 +269,49 @@ fn window_size_matches_buffer_count() {
 
 #[test]
 fn ack_inside_window_across_block_wrap() {
-    let window_index = 65534;
+    let window_first = 65534u64;
     let count = 4;
     assert_eq!(
-        classify_ack(65534, window_index, count),
+        classify_ack(65534, window_first, count),
         AckClass::InWindow(65534)
     );
     assert_eq!(
-        classify_ack(65535, window_index, count),
+        classify_ack(65535, window_first, count),
         AckClass::InWindow(65535)
     );
-    assert_eq!(classify_ack(0, window_index, count), AckClass::InWindow(0));
-    assert_eq!(classify_ack(1, window_index, count), AckClass::InWindow(1));
-    assert_eq!(classify_ack(2, window_index, count), AckClass::Other);
-    assert_eq!(classify_ack(65533, window_index, count), AckClass::Previous);
+    assert_eq!(
+        classify_ack(0, window_first, count),
+        AckClass::InWindow(65536)
+    );
+    assert_eq!(
+        classify_ack(1, window_first, count),
+        AckClass::InWindow(65537)
+    );
+    assert_eq!(classify_ack(2, window_first, count), AckClass::Other);
+    assert_eq!(classify_ack(65533, window_first, count), AckClass::Previous);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn window_slots_stay_distinct_across_sequence_wrap() {
+    let mut window = Window::new(4, 4);
+    let data: Vec<u8> = (0..16).collect();
+    let mut opened_file = VirtualOpenedFile::new(data.clone());
+    for seq in 65533u64..65537 {
+        window
+            .push_block(&mut opened_file, seq, seq as u16)
+            .await
+            .unwrap();
+    }
+    let expected_slots = [1usize, 2, 3, 0];
+    for (offset, seq) in (65533u64..65537).enumerate() {
+        let slot = window.slot(seq);
+        assert_eq!(slot, expected_slots[offset]);
+        let buffer = &window.buffers[slot];
+        let block_number = u16::from_be_bytes(buffer[2..4].try_into().unwrap());
+        assert_eq!(block_number, seq as u16);
+        let payload_start = offset * 4;
+        assert_eq!(&buffer[4..8], &data[payload_start..payload_start + 4]);
+    }
 }
 
 async fn recv_data_block(

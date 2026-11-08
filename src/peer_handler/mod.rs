@@ -72,27 +72,32 @@ impl Window {
     async fn push_block<O: OpenedFile>(
         &mut self,
         opened_file: &mut O,
-        index: u16,
+        seq: u64,
+        block_number: u16,
     ) -> io::Result<(usize, bool)> {
-        let buffer = self.buffer(index);
+        let buffer = self.buffer(seq);
         buffer[0] = 0;
         buffer[1] = DATA as u8;
-        buffer[2] = (index >> 8) as u8;
-        buffer[3] = index as u8;
+        buffer[2..4].copy_from_slice(&block_number.to_be_bytes());
         let read_bytes = opened_file.read_to(&mut buffer[4..]).await?;
         buffer.truncate(read_bytes + 4);
         Ok((read_bytes, read_bytes < self.block_size as usize))
     }
-    fn buffer(&mut self, index: u16) -> &mut Vec<u8> {
-        let window_length = self.buffers.len();
-        let buffer = &mut self.buffers[index as usize % window_length];
+
+    fn slot(&self, seq: u64) -> usize {
+        (seq % self.buffers.len() as u64) as usize
+    }
+
+    fn buffer(&mut self, seq: u64) -> &mut Vec<u8> {
+        let slot = self.slot(seq);
+        let buffer = &mut self.buffers[slot];
         unsafe { buffer.set_len(buffer.capacity()) }
         buffer
     }
 
-    async fn send(&mut self, index: u16, datagram_stream: &DatagramStream) -> io::Result<()> {
-        let window_length = self.buffers.len();
-        let buffer = &mut self.buffers[index as usize % window_length];
+    async fn send(&mut self, seq: u64, datagram_stream: &DatagramStream) -> io::Result<()> {
+        let slot = self.slot(seq);
+        let buffer = &self.buffers[slot];
         datagram_stream.send(buffer).await
     }
 }
@@ -106,17 +111,18 @@ async fn send_file<O: OpenedFile>(
 ) -> Result<(usize, usize), TFTPError> {
     let mut bytes_sent: usize = 0;
     let mut blocks_sent: usize = 0;
-    let mut last_acknowledged_index: u16 = 0;
-    let mut last_read_index: u16 = 0;
+    let mut last_acknowledged_seq: u64 = 0;
+    let mut last_read_seq: u64 = 0;
     let mut done = false;
     while !done {
-        let unacknowledged_count = last_read_index.wrapping_sub(last_acknowledged_index);
+        let unacknowledged_count = (last_read_seq - last_acknowledged_seq) as u16;
         debug_assert!(unacknowledged_count <= window.size());
         let mut to_send = unacknowledged_count;
         while to_send < window.size() {
-            last_read_index = last_read_index.wrapping_add(1);
-            if let Ok((read_bytes, is_last)) =
-                window.push_block(&mut opened_file, last_read_index).await
+            last_read_seq += 1;
+            if let Ok((read_bytes, is_last)) = window
+                .push_block(&mut opened_file, last_read_seq, last_read_seq as u16)
+                .await
             {
                 to_send += 1;
                 bytes_sent += read_bytes;
@@ -129,12 +135,12 @@ async fn send_file<O: OpenedFile>(
             }
         }
         debug_assert!(to_send <= window.size());
-        last_acknowledged_index = match send_reliably(
+        last_acknowledged_seq = match send_reliably(
             &mut window,
             &ack_timeout,
             datagram_stream,
             buffer,
-            last_acknowledged_index.wrapping_add(1),
+            last_acknowledged_seq + 1,
             to_send,
         )
         .await
@@ -183,30 +189,32 @@ async fn read_acknowledge(
 }
 
 enum WindowWait {
-    Accepted(u16),
+    Accepted(u64),
     Retransmit,
 }
 
 async fn wait_for_window_ack(
     datagram_stream: &DatagramStream,
     buffer: &mut [u8],
-    window_index: u16,
+    window_first: u64,
     count: u16,
 ) -> Result<WindowWait, RecvError> {
-    let window_end_index = window_index.wrapping_add(count);
+    let window_end = window_first + count as u64;
     loop {
         match read_acknowledge(datagram_stream, buffer).await {
-            Ok(received_ack) => match classify_ack(received_ack, window_index, count) {
+            Ok(received_ack) => match classify_ack(received_ack, window_first, count) {
                 AckClass::InWindow(acknowledged) => return Ok(WindowWait::Accepted(acknowledged)),
                 AckClass::Previous => {
                     eprintln!(
-                        "{datagram_stream}: Duplicate ACK {received_ack}, retransmitting {window_index}"
+                        "{datagram_stream}: Duplicate ACK {received_ack}, retransmitting {}",
+                        window_first as u16
                     );
                     return Ok(WindowWait::Retransmit);
                 }
                 AckClass::Other => {
                     eprintln!(
-                        "{datagram_stream}: Ignore ACK {received_ack} outside {window_index} .. {window_end_index}"
+                        "{datagram_stream}: Ignore ACK {received_ack} outside {} .. {}",
+                        window_first as u16, window_end as u16
                     );
                 }
             },
@@ -224,15 +232,16 @@ enum SendError {
 
 #[derive(Debug, PartialEq, Eq)]
 enum AckClass {
-    InWindow(u16),
+    InWindow(u64),
     Previous,
     Other,
 }
 
-fn classify_ack(received_ack: u16, window_index: u16, count: u16) -> AckClass {
-    if received_ack.wrapping_sub(window_index) < count {
-        AckClass::InWindow(received_ack)
-    } else if received_ack == window_index.wrapping_sub(1) {
+fn classify_ack(received_ack: u16, window_first: u64, count: u16) -> AckClass {
+    let distance = received_ack.wrapping_sub(window_first as u16);
+    if distance < count {
+        AckClass::InWindow(window_first + distance as u64)
+    } else if received_ack == (window_first.wrapping_sub(1)) as u16 {
         AckClass::Previous
     } else {
         AckClass::Other
@@ -483,15 +492,16 @@ async fn send_reliably(
     ack_timeout: &AckTimeout,
     datagram_stream: &DatagramStream,
     buffer: &mut [u8],
-    window_index: u16,
+    window_first: u64,
     count: u16,
-) -> Result<u16, SendError> {
-    let window_end_index = window_index.wrapping_add(count);
+) -> Result<u64, SendError> {
+    let window_end = window_first + count as u64;
     for attempt in 1..=SEND_ATTEMPTS {
-        for block_index in (0..count).map(|offset| window_index.wrapping_add(offset)) {
-            if let Err(send_error) = window.send(block_index, datagram_stream).await {
+        for block_seq in window_first..window_end {
+            if let Err(send_error) = window.send(block_seq, datagram_stream).await {
                 eprintln!(
-                    "{datagram_stream}: Network error while sending block {block_index}: {send_error}"
+                    "{datagram_stream}: Network error while sending block {}: {send_error}",
+                    block_seq as u16
                 );
                 return Err(SendError::Network);
             }
@@ -500,7 +510,7 @@ async fn send_reliably(
             .timeout(wait_for_window_ack(
                 datagram_stream,
                 buffer,
-                window_index,
+                window_first,
                 count,
             ))
             .await
@@ -513,7 +523,8 @@ async fn send_reliably(
             Ok(Err(_)) => return Err(SendError::Network),
             Err(_elapsed) => {
                 eprintln!(
-                    "{datagram_stream}: Timeout waiting for {window_index} .. {window_end_index}, attempt {attempt}"
+                    "{datagram_stream}: Timeout waiting for {} .. {}, attempt {attempt}",
+                    window_first as u16, window_end as u16
                 );
             }
         }
