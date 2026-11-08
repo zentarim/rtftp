@@ -533,9 +533,9 @@ async fn send_reliably(
                 return Err(SendError::ClientError(error_code, error_message));
             }
             Ok(Err(_)) => return Err(SendError::Network),
-            Err(_elapsed) => {
+            Err(elapsed) => {
                 eprintln!(
-                    "{datagram_stream}: Timeout waiting for {} .. {}, attempt {attempt}",
+                    "{datagram_stream}: Timeout waiting for {} .. {}, attempt {attempt}: {elapsed}",
                     rollover.block_number(window_first),
                     rollover.block_number(window_end)
                 );
