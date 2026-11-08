@@ -610,14 +610,10 @@ async fn negotiate_options<O: OpenedFile>(
     for pair in timeout_pairs {
         oack.push(pair);
     }
-    let block_size = {
-        if let Some(block_size) = Blksize::find_in(options) {
-            oack.push(block_size.as_key_pair());
-            block_size
-        } else {
-            Default::default()
-        }
-    };
+    let (block_size, blksize_pairs) = Blksize::negotiate(options);
+    for pair in blksize_pairs {
+        oack.push(pair);
+    }
     if TSize::is_requested(options) {
         match TSize::obtain(opened_file).await {
             Ok(tsize) => oack.push(tsize.as_key_pair()),

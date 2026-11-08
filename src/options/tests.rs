@@ -1,14 +1,21 @@
 use super::*;
 
+fn negotiate_blksize(entries: &[(&str, &str)]) -> (usize, HashMap<String, String>) {
+    let options = entries
+        .iter()
+        .map(|(name, value)| (name.to_string(), value.to_string()))
+        .collect();
+    let (blksize, pairs) = Blksize::negotiate(&options);
+    (blksize.get_size(), pairs.into_iter().collect())
+}
+
 #[test]
 fn find_block_size() {
-    let mut options = HashMap::new();
-    options.insert(BLKSIZE.to_string(), "1468".to_string());
-    let blk_size = Blksize::find_in(&options).unwrap();
-    assert_eq!(blk_size.block_size, 1468);
+    let (block_size, pairs) = negotiate_blksize(&[(BLKSIZE, "1468")]);
+    assert_eq!(block_size, 1468);
     assert_eq!(
-        blk_size.as_key_pair(),
-        (BLKSIZE.to_string(), "1468".to_string())
+        pairs,
+        HashMap::from([(BLKSIZE.to_string(), "1468".to_string())])
     );
 }
 
@@ -189,20 +196,117 @@ fn backoff_doubles_utimeout_range_boundaries() {
 
 #[test]
 fn test_block_size_bottom() {
-    let mut options = HashMap::new();
-    let bottom_cap = BLOCK_SIZE_BOTTOM_CAP - 1;
-    options.insert(BLKSIZE.to_string(), bottom_cap.to_string());
-    let find_result = Blksize::find_in(&options);
-    assert!(find_result.is_none());
+    let bottom_cap = (BLOCK_SIZE_BOTTOM_CAP - 1).to_string();
+    let (block_size, pairs) = negotiate_blksize(&[(BLKSIZE, &bottom_cap)]);
+    assert_eq!(block_size, 512);
+    assert!(pairs.is_empty());
 }
 
 #[test]
 fn test_block_size_cap() {
-    let mut options = HashMap::new();
-    let upper_cap = BLOCK_SIZE_UPPER_CAP + 1;
-    options.insert(BLKSIZE.to_string(), upper_cap.to_string());
-    let find_result = Blksize::find_in(&options);
-    assert!(find_result.is_none());
+    let upper_cap = (BLOCK_SIZE_UPPER_CAP + 1).to_string();
+    let (block_size, pairs) = negotiate_blksize(&[(BLKSIZE, &upper_cap)]);
+    assert_eq!(block_size, 512);
+    assert!(pairs.is_empty());
+}
+
+#[test]
+fn absent_blksize_options_use_the_default() {
+    let (block_size, pairs) = negotiate_blksize(&[]);
+    assert_eq!(block_size, 512);
+    assert!(pairs.is_empty());
+}
+
+#[test]
+fn blksize2_rounds_down_to_a_power_of_two() {
+    let (block_size, pairs) = negotiate_blksize(&[(BLKSIZE2, "1468")]);
+    assert_eq!(block_size, 1024);
+    assert_eq!(
+        pairs,
+        HashMap::from([(BLKSIZE2.to_string(), "1024".to_string())])
+    );
+}
+
+#[test]
+fn blksize2_caps_large_requests_at_32768() {
+    let (block_size, pairs) = negotiate_blksize(&[(BLKSIZE2, "100000")]);
+    assert_eq!(block_size, 32768);
+    assert_eq!(
+        pairs,
+        HashMap::from([(BLKSIZE2.to_string(), "32768".to_string())])
+    );
+}
+
+#[test]
+fn blksize2_accepts_eight_and_rejects_smaller_or_unparsed_values() {
+    let (block_size, pairs) = negotiate_blksize(&[(BLKSIZE2, "8")]);
+    assert_eq!(block_size, 8);
+    assert_eq!(
+        pairs,
+        HashMap::from([(BLKSIZE2.to_string(), "8".to_string())])
+    );
+
+    for value in ["7", "abc"] {
+        let (block_size, pairs) = negotiate_blksize(&[(BLKSIZE2, value)]);
+        assert_eq!(block_size, 512);
+        assert!(pairs.is_empty());
+    }
+}
+
+#[test]
+fn blksize_rejects_blksize2_when_the_agreed_size_is_not_a_power_of_two() {
+    let (block_size, pairs) = negotiate_blksize(&[(BLKSIZE, "1468"), (BLKSIZE2, "1468")]);
+    assert_eq!(block_size, 1468);
+    assert_eq!(
+        pairs,
+        HashMap::from([(BLKSIZE.to_string(), "1468".to_string())])
+    );
+}
+
+#[test]
+fn larger_blksize2_drops_a_smaller_blksize() {
+    let (block_size, pairs) = negotiate_blksize(&[(BLKSIZE, "1024"), (BLKSIZE2, "5000")]);
+    assert_eq!(block_size, 4096);
+    assert_eq!(
+        pairs,
+        HashMap::from([(BLKSIZE2.to_string(), "4096".to_string())])
+    );
+}
+
+#[test]
+fn matching_power_of_two_confirms_both_blksize_options() {
+    let (block_size, pairs) = negotiate_blksize(&[(BLKSIZE, "4096"), (BLKSIZE2, "5000")]);
+    assert_eq!(block_size, 4096);
+    assert_eq!(
+        pairs,
+        HashMap::from([
+            (BLKSIZE.to_string(), "4096".to_string()),
+            (BLKSIZE2.to_string(), "4096".to_string()),
+        ])
+    );
+}
+
+#[test]
+fn equal_512_confirms_both_blksize_options() {
+    let (block_size, pairs) = negotiate_blksize(&[(BLKSIZE, "512"), (BLKSIZE2, "512")]);
+    assert_eq!(block_size, 512);
+    assert_eq!(
+        pairs,
+        HashMap::from([
+            (BLKSIZE.to_string(), "512".to_string()),
+            (BLKSIZE2.to_string(), "512".to_string()),
+        ])
+    );
+}
+
+#[test]
+fn out_of_range_blksize_is_ignored_beside_blksize2() {
+    let (block_size, pairs) = negotiate_blksize(&[(BLKSIZE, "70000"), (BLKSIZE2, "4096")]);
+    assert_eq!(block_size, 4096);
+    assert_eq!(
+        pairs,
+        HashMap::from([(BLKSIZE2.to_string(), "4096".to_string())])
+    );
 }
 
 #[test]

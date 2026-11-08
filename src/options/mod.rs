@@ -16,6 +16,8 @@ static UTIMEOUT: &str = "utimeout";
 
 static BLKSIZE: &str = "blksize";
 
+static BLKSIZE2: &str = "blksize2";
+
 const WINDOW_SIZE: &str = "windowsize";
 
 const ROLLOVER: &str = "rollover";
@@ -40,28 +42,63 @@ pub(super) struct Blksize {
 }
 
 impl Blksize {
-    pub(super) fn find_in(options: &HashMap<String, String>) -> Option<Self> {
-        if let Some(block_size_string) = options.get(BLKSIZE)
-            && let Ok(block_size) = block_size_string.parse::<usize>()
-        {
-            if (BLOCK_SIZE_BOTTOM_CAP..=BLOCK_SIZE_UPPER_CAP).contains(&block_size) {
-                return Some(Self { block_size });
+    pub(super) fn negotiate(options: &HashMap<String, String>) -> (Self, Vec<(String, String)>) {
+        let mut size = 0;
+        let blksize2 = requested_blksize2(options);
+        if let Some(rounded) = blksize2 {
+            size = rounded;
+        }
+        let mut blksize = requested_blksize(options);
+        if let Some(requested) = blksize {
+            if size > requested {
+                blksize = None;
             } else {
-                eprintln!(
-                    "Requested {block_size} doesn't fit in range {BLOCK_SIZE_BOTTOM_CAP} .. ={BLOCK_SIZE_UPPER_CAP}"
-                );
+                size = requested;
             }
         }
-        None
-    }
-
-    pub(super) fn as_key_pair(&self) -> (String, String) {
-        (String::from(BLKSIZE), self.block_size.to_string())
+        if size == 0 {
+            return (Self::default(), Vec::new());
+        }
+        let mut pairs = Vec::new();
+        if blksize.is_some() {
+            pairs.push((String::from(BLKSIZE), size.to_string()));
+        }
+        if blksize2.is_some() && size.is_power_of_two() {
+            pairs.push((String::from(BLKSIZE2), size.to_string()));
+        }
+        (Self { block_size: size }, pairs)
     }
 
     pub(super) fn get_size(&self) -> usize {
         self.block_size
     }
+}
+
+fn requested_blksize(options: &HashMap<String, String>) -> Option<usize> {
+    if let Some(block_size_string) = options.get(BLKSIZE)
+        && let Ok(block_size) = block_size_string.parse::<usize>()
+    {
+        if (BLOCK_SIZE_BOTTOM_CAP..=BLOCK_SIZE_UPPER_CAP).contains(&block_size) {
+            return Some(block_size);
+        }
+        eprintln!(
+            "Requested {block_size} doesn't fit in range {BLOCK_SIZE_BOTTOM_CAP} .. ={BLOCK_SIZE_UPPER_CAP}"
+        );
+    }
+    None
+}
+
+fn requested_blksize2(options: &HashMap<String, String>) -> Option<usize> {
+    let block_size_string = options.get(BLKSIZE2)?;
+    let block_size = block_size_string.parse::<usize>().ok()?;
+    if block_size < BLOCK_SIZE_BOTTOM_CAP {
+        eprintln!(
+            "Requested blksize2 {block_size} doesn't fit in range {BLOCK_SIZE_BOTTOM_CAP} .. ={BLOCK_SIZE_UPPER_CAP}"
+        );
+        return None;
+    }
+    let capped = block_size.min(BLOCK_SIZE_UPPER_CAP);
+    Some(1 << (usize::BITS - 1 - capped.leading_zeros()))
 }
 
 impl Default for Blksize {

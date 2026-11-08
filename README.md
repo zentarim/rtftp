@@ -102,6 +102,7 @@ In this example:
     - timeout 
     - utimeout (nonstandard, microseconds, as in tftp-hpa; overrides timeout)
     - blksize
+    - blksize2 (nonstandard, power of 2 up to 32768, as in tftp-hpa)
     - tsize
     - windowsize
     - rollover (nonstandard, only 0 and 1, as in tftp-hpa)

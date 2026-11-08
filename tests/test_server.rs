@@ -988,3 +988,79 @@ async fn invalid_utimeout_falls_back_to_timeout_local() {
         HashMap::from([("timeout".to_string(), "2".to_string())])
     );
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn blksize2_rounds_down_local() {
+    let source_ip = "127.0.0.25";
+    let server_dir = mk_tmp(blksize2_rounds_down_local);
+    let block_size = 1024;
+    let data = make_payload(block_size * 4 + 7);
+    let file_name = "file.txt";
+    let file = server_dir.join(source_ip).join(file_name);
+    _write_file(&file, &data);
+    let running_server = start_rtftp(server_dir).await;
+    let client = running_server.open_paired_client(source_ip).await;
+    let sent_request = client
+        .send_optioned_read_request(
+            file_name,
+            &HashMap::from([("blksize2".to_string(), "1468".to_string())]),
+        )
+        .await
+        .unwrap();
+    let oack = sent_request.read_oack(5).await.unwrap();
+    assert_eq!(
+        oack.fields(),
+        HashMap::from([("blksize2".to_string(), block_size.to_string())])
+    );
+    let mut block = oack
+        .acknowledge()
+        .await
+        .unwrap()
+        .read_next(5)
+        .await
+        .unwrap();
+    let mut read_data = Vec::new();
+    loop {
+        let payload_len = block.data().len();
+        read_data.extend_from_slice(block.data());
+        if payload_len < block_size {
+            block.acknowledge().await.unwrap();
+            break;
+        }
+        assert_eq!(payload_len, block_size);
+        block = block
+            .acknowledge()
+            .await
+            .unwrap()
+            .read_next(5)
+            .await
+            .unwrap();
+    }
+    assert_eq!(read_data, data);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn blksize_and_blksize2_local() {
+    let source_ip = "127.0.0.26";
+    let server_dir = mk_tmp(blksize_and_blksize2_local);
+    let file_name = "file.txt";
+    let file = server_dir.join(source_ip).join(file_name);
+    _write_file(&file, b"payload");
+    let running_server = start_rtftp(server_dir).await;
+    let client = running_server.open_paired_client(source_ip).await;
+    let sent_request = client
+        .send_optioned_read_request(
+            file_name,
+            &HashMap::from([
+                ("blksize".to_string(), "1024".to_string()),
+                ("blksize2".to_string(), "5000".to_string()),
+            ]),
+        )
+        .await
+        .unwrap();
+    let oack = sent_request.read_oack(5).await.unwrap();
+    assert_eq!(
+        oack.fields(),
+        HashMap::from([("blksize2".to_string(), "4096".to_string())])
+    );
+}
