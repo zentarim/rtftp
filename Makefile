@@ -34,7 +34,7 @@ bench-download: $(CLOUD_HYPERVISOR_BIN) $(INITRAMFS)
 	cargo test --release --test test_download_time -- --ignored --test-threads 1 --nocapture
 
 lint:
-	cargo clippy -- -D warnings
+	cargo clippy --workspace -- -D warnings
 
 format:
 	cargo fmt
