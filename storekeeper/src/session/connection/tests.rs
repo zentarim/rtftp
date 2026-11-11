@@ -52,7 +52,7 @@ fn append_send(connection: &Connection, output: &mut Vec<u8>, limit: usize) -> u
     copied
 }
 
-fn drive(request: &[u8], limits: Limits) -> Vec<u8> {
+fn drive(request: &[u8], limits: Limits) -> (Vec<u8>, Option<String>) {
     let mut connection = Connection::new();
     let mut output = Vec::new();
     let mut request_at = 0;
@@ -80,7 +80,7 @@ fn drive(request: &[u8], limits: Limits) -> Vec<u8> {
         };
         extend_pending(&mut pending, steps);
     }
-    output
+    (output, connection.take_sent_path())
 }
 
 fn extend_pending(pending: &mut VecDeque<Submission>, steps: Steps) {
@@ -140,7 +140,7 @@ fn read_step(
 fn exchange(path: &str, chunk_size: usize, limits: Limits) -> Vec<u8> {
     let mut request = Vec::new();
     write_request(&mut request, path, chunk_size).unwrap();
-    drive(&request, limits)
+    drive(&request, limits).0
 }
 
 fn collect_file(bytes: &[u8]) -> (u64, Vec<u8>) {
@@ -190,9 +190,11 @@ fn empty_file_ends_with_an_empty_chunk() {
 fn missing_file_uses_the_not_found_text() {
     let dir = scratch("missing");
     let path = dir.join("absent");
-    let mut cursor =
-        std::io::Cursor::new(exchange(path.to_str().unwrap(), MAX_CHUNK_SIZE, whole()));
-    match read_reply(&mut cursor).unwrap() {
+    let mut request = Vec::new();
+    write_request(&mut request, path.to_str().unwrap(), MAX_CHUNK_SIZE).unwrap();
+    let (output, sent) = drive(&request, whole());
+    assert_eq!(sent, None);
+    match read_reply(&mut std::io::Cursor::new(output)).unwrap() {
         Reply::Error(text) => assert_eq!(text, FILE_NOT_FOUND),
         Reply::Info(_) => panic!("expected ERRO"),
     }
@@ -214,7 +216,7 @@ fn oversized_send_is_invalid_send() {
     frame.extend_from_slice(b"FILE\0/file\0SEND\0");
     frame.extend_from_slice((MAX_CHUNK_SIZE + 1).to_string().as_bytes());
     frame.push(0);
-    let output = drive(
+    let (output, sent) = drive(
         &frame,
         Limits {
             recv: 1,
@@ -222,6 +224,7 @@ fn oversized_send_is_invalid_send() {
             send: usize::MAX,
         },
     );
+    assert_eq!(sent, None);
     match read_reply(&mut std::io::Cursor::new(output)).unwrap() {
         Reply::Error(text) => assert_eq!(text, INVALID_SEND),
         Reply::Info(_) => panic!("expected ERRO"),
@@ -279,6 +282,7 @@ fn send_failure_cancels_an_in_flight_read() {
     let steps = connection.advance(Completion::Cancel(Ok(())));
     assert_eq!(steps.into_array()[0], Some(Submission::Close));
     assert_eq!(connection.take_error_log().as_deref(), Some("reset"));
+    assert_eq!(connection.take_sent_path(), None);
 }
 
 #[test]
@@ -310,6 +314,32 @@ fn read_failure_waits_for_the_chunk_already_sending() {
         Reply::Info(_) => panic!("expected ERRO"),
     }
     assert_eq!(connection.take_error_log().as_deref(), Some("disk"));
+    assert_eq!(connection.take_sent_path(), None);
+}
+
+#[test]
+fn completed_file_records_the_sent_path() {
+    let dir = scratch("sent");
+    let path = dir.join("payload");
+    fs::write(&path, b"0123456789").unwrap();
+    let mut request = Vec::new();
+    write_request(&mut request, path.to_str().unwrap(), 4).unwrap();
+    let (output, sent) = drive(&request, whole());
+    let (size, collected) = collect_file(&output);
+    assert_eq!(size, 10);
+    assert_eq!(collected, b"0123456789");
+    assert_eq!(sent.as_deref(), Some(path.to_str().unwrap()));
+}
+
+#[test]
+fn empty_file_records_the_sent_path() {
+    let dir = scratch("sent-empty");
+    let path = dir.join("payload");
+    fs::write(&path, b"").unwrap();
+    let mut request = Vec::new();
+    write_request(&mut request, path.to_str().unwrap(), 4).unwrap();
+    let (_output, sent) = drive(&request, whole());
+    assert_eq!(sent.as_deref(), Some(path.to_str().unwrap()));
 }
 
 fn pending_len(connection: &Connection) -> usize {

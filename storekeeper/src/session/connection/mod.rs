@@ -33,6 +33,7 @@ pub(super) struct Connection {
     follow_up: FollowUp,
     read_error: Option<io::Error>,
     log_error: Option<String>,
+    sent_path: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -172,6 +173,7 @@ impl Connection {
             follow_up: FollowUp::Close,
             read_error: None,
             log_error: None,
+            sent_path: None,
         }
     }
 
@@ -201,6 +203,10 @@ impl Connection {
 
     pub(super) fn take_error_log(&mut self) -> Option<String> {
         self.log_error.take()
+    }
+
+    pub(super) fn take_sent_path(&mut self) -> Option<String> {
+        self.sent_path.take()
     }
 
     pub(super) fn advance(&mut self, completion: Completion) -> Steps {
@@ -476,6 +482,9 @@ impl Connection {
         if let Some(error) = self.read_error.take() {
             self.log_error = Some(error.to_string());
             return self.queue_error("read failed");
+        }
+        if matches!(kind, OutgoingKind::Chunk { body_len: 0, .. }) {
+            self.sent_path = Some(self.path.to_string_lossy().into_owned());
         }
         match self.follow_up {
             FollowUp::Close => self.quiet_close(),

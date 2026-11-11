@@ -292,6 +292,9 @@ impl Reactor {
             if let Some(message) = connection.take_error_log() {
                 eprintln!("connection: {message}");
             }
+            if let Some(path) = connection.take_sent_path() {
+                crate::memory::report_sent(&path);
+            }
             steps
         };
         self.perform(index, steps)

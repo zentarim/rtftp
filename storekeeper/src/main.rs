@@ -1,3 +1,4 @@
+mod memory;
 mod session;
 mod setup;
 
@@ -14,5 +15,6 @@ fn main() {
 
 fn run() -> Result<(), String> {
     let root = setup::prepare()?;
+    memory::report_boot();
     session::listen(root)
 }
